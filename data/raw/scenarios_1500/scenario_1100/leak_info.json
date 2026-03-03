@@ -1,0 +1,10 @@
+{
+    "has_leak": true,
+    "leak_details": {
+        "junction": "21",
+        "leak_demand_m3s": 0.008725182010219087,
+        "start_hour": 16,
+        "duration_hours": 5,
+        "model": "demand_based"
+    }
+}
