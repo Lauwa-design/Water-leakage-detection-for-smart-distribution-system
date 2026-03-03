@@ -1,0 +1,41 @@
+{
+    "has_leak": true,
+    "leak_details": {
+        "junction": "15",
+        "leak_type": "intermittent",
+        "leak_demand_m3s": 0.009029829104906444,
+        "start_hour": 13,
+        "duration_hours": 2,
+        "pattern_used": "LeakPattern_0776",
+        "pattern_values": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9196557247434698,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ]
+    },
+    "scenario_id": 776,
+    "leak_probability": 0.7,
+    "simulation_duration_hours": 24,
+    "timestep_minutes": 30
+}

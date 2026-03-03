@@ -1,0 +1,41 @@
+{
+    "has_leak": true,
+    "leak_details": {
+        "junction": "20",
+        "leak_type": "continuous",
+        "leak_demand_m3s": 0.009940615846704467,
+        "start_hour": 3,
+        "duration_hours": 21,
+        "pattern_used": "LeakPattern_1104",
+        "pattern_values": [
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ]
+    },
+    "scenario_id": 1104,
+    "leak_probability": 0.7,
+    "simulation_duration_hours": 24,
+    "timestep_minutes": 30
+}

@@ -1,0 +1,8 @@
+{
+    "has_leak": false,
+    "leak_details": null,
+    "scenario_id": 1073,
+    "leak_probability": 0.7,
+    "simulation_duration_hours": 24,
+    "timestep_minutes": 30
+}

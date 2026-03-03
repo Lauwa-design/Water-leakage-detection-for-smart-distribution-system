@@ -1,0 +1,13 @@
+{
+    "num_scenarios_requested": 500,
+    "num_scenarios_generated": 500,
+    "num_scenarios_failed": 0,
+    "num_scenarios_skipped": 0,
+    "leak_probability": 0.7,
+    "simulation_duration_hours": 24,
+    "timestep_minutes": 30,
+    "timeout_seconds": 120,
+    "generation_time_seconds": 60.828016,
+    "success_rate_percent": 100.0,
+    "timestamp": "2026-01-08T12:32:14.723094"
+}
