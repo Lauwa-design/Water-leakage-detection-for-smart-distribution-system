@@ -1,9 +1,0 @@
-{
-    "num_scenarios_requested": 700,
-    "successful": 192,
-    "failed": 508,
-    "leak_probability": 0.7,
-    "simulation_duration_hours": 24,
-    "timestep_minutes": 30,
-    "timeout_seconds": 120
-}
