@@ -1,7 +1,0 @@
-{
-    "num_scenarios": 5,
-    "leak_probability": 0.7,
-    "demand_model": "PDD",
-    "timestep_minutes": 30,
-    "duration_hours": 24
-}
