@@ -276,6 +276,12 @@ class LeakScenarioGenerator:
                 has_leak     = False
                 active_hours = []
 
+        # ── Configure simulation duration and timestep ─────────────────
+        # CRITICAL: must set explicitly or wntr returns only 1 timestep
+        wn.options.time.duration           = TIMESTEPS_PER_DAY * HOUR_TO_SEC
+        wn.options.time.hydraulic_timestep = HOUR_TO_SEC
+        wn.options.time.report_timestep    = HOUR_TO_SEC
+
         # ── Run EPANET simulation ──────────────────────────────────────
         try:
             sim     = wntr.sim.EpanetSimulator(wn)
