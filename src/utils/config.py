@@ -1,5 +1,6 @@
 """
 config.py — THIWASCO Leak Detection
+=====================================
 Single source of truth for ALL paths, parameters and schema.
 Every other file imports from here. Never hardcode anything elsewhere.
 
@@ -9,6 +10,7 @@ Location : src/utils/config.py
 from pathlib import Path
 
 # PROJECT ROOT
+
 # src/utils/config.py
 # .parent        → src/utils/
 # .parent.parent → src/
@@ -26,9 +28,7 @@ MODELS_DIR        = OUTPUTS_DIR / 'models'
 FIGURES_DIR       = OUTPUTS_DIR / 'figures'
 METRICS_DIR       = OUTPUTS_DIR / 'metrics'
 
-
 # KEY FILES
-
 NETWORK_FILE       = EXTERNAL_DIR  / 'hanoi_network.inp'
 MERGED_DATASET     = PROCESSED_DIR / 'merged_dataset.csv'
 ENGINEERED_DATASET = PROCESSED_DIR / 'engineered_features.csv'
@@ -46,7 +46,6 @@ METRICS_FILE       = METRICS_DIR / 'evaluation_metrics.json'
 SIM_DURATION_HOURS = 24
 TIMESTEP_HOURS     = 1
 TIMESTEPS_PER_DAY  = 24
-
 
 # SCENARIO GENERATION
 NUM_SCENARIOS    = 1000
@@ -67,7 +66,6 @@ LEAK_TYPES = {
     'demand':       0.10,
     'intermittent': 0.05,
 }
-
 
 # NIGHT / DAY WINDOWS
 NIGHT_HOURS = list(range(0, 6))    # 00:00–05:00
@@ -104,7 +102,31 @@ RAW_FEATURE_COLUMNS = [
     'flow_rolling_std_avg', 'flow_cv',
 ]
 
+# LEAK DETECTION MODE CLASSIFICATION
+
+# Instant leaks — detectable within 1-2 hours
+# Sharp pressure drop, sudden flow spike
+INSTANT_LEAK_TYPES = ['continuous', 'pressure']
+
+# Slow leaks — build up over hours, hard to detect visually
+# Gradual pressure drift, sustained low-level excess flow
+SLOW_LEAK_TYPES = ['demand', 'intermittent']
+
+# Alert levels used by Streamlit app
+ALERT_CRITICAL = 'CRITICAL'   # Instant leak — immediate action required
+ALERT_WARNING  = 'WARNING'    # Slow leak    — monitor closely
+ALERT_NORMAL   = 'NORMAL'     # No leak      — all clear
+
+# Feature window sizes (hours) — within 24h scenario
+WINDOW_SHORT  = 3    # catches instant leaks (sudden changes)
+WINDOW_MEDIUM = 6    # catches developing leaks
+WINDOW_LONG   = 12   # catches slow background leaks
+
+# Real-time streaming window (hours) — used by app feature_builder
+STREAM_WINDOW_HOURS = 72   # 3-day rolling window for live detection
+
 ENGINEERED_FEATURE_COLUMNS = [
+    # ── Baseline deviation features ───────────────────────────────
     'night_flow_deviation', 'night_flow_anomaly', 'night_to_day_ratio',
     'pressure_deviation', 'pressure_drop_alert',
     'pressure_drop_deviation', 'pressure_cv',
@@ -113,10 +135,30 @@ ENGINEERED_FEATURE_COLUMNS = [
     'flow_demand_ratio', 'hydraulic_imbalance', 'mass_balance_error',
     'flow_pressure_ratio', 'demand_pressure_ratio',
     'pressure_drop', 'flow_anomaly_score',
+
+    # ── INSTANT leak features (1-2h window) ───────────────────────
+    'pressure_diff_1h',       # pressure change from previous hour
+    'flow_diff_1h',           # flow change from previous hour
+    'demand_diff_1h',         # demand change from previous hour
+    'pressure_drop_rate',     # rate of pressure fall (slope over 2h)
+    'flow_spike_score',       # how much flow exceeds short-window mean
+
+    # ── SLOW leak features (6h window) ────────────────────────────
+    'rolling_6h_pressure_mean',    # 6-hour average pressure
+    'rolling_6h_flow_mean',        # 6-hour average flow
+    'rolling_6h_pressure_std',     # 6-hour pressure variability
+    'pressure_trend_6h',           # pressure slope over 6 hours
+    'flow_excess_6h',              # cumulative flow above baseline over 6h
+
+    # ── SLOW leak features (12h window) ───────────────────────────
+    'rolling_12h_pressure_mean',   # 12-hour average pressure
+    'rolling_12h_flow_mean',       # 12-hour average flow
+    'pressure_trend_12h',          # pressure slope over 12 hours
+    'night_sustained_excess',      # night flow consistently above baseline
+    'slow_leak_score',             # combined slow leak indicator
 ]
 
 # MODEL PARAMETERS
-
 RANDOM_STATE = 42
 
 # Split BY SCENARIO ID — prevents data leakage
@@ -133,22 +175,17 @@ RF_N_JOBS            = -1
 
 CV_FOLDS = 5
 
-# ================================================================
 # DETECTION THRESHOLDS (used by Streamlit app)
-# ================================================================
-LEAK_THRESHOLD_HIGH   = 0.7   # trigger alert
-LEAK_THRESHOLD_MEDIUM = 0.4   # monitor
-LEAK_THRESHOLD_LOW    = 0.0   # normal
 
-# ================================================================
+LEAK_THRESHOLD_HIGH   = 0.7   # CRITICAL — instant leak, immediate action
+LEAK_THRESHOLD_MEDIUM = 0.4   # WARNING  — slow leak, monitor closely
+LEAK_THRESHOLD_LOW    = 0.0   # NORMAL   — all clear
+
 # EMAIL NOTIFICATION (used by app/components/notifier.py)
-# ================================================================
 ALERT_EMAIL_SUBJECT = 'THIWASCO ALERT: Leak Detected in Water Network'
 ALERT_SMTP_PORT     = 587
 
-# ================================================================
 # VISUALISATION
-# ================================================================
 FIGURE_DPI     = 150
 FIGURE_SIZE    = (10, 6)
 COLOR_NO_LEAK  = '#2ecc71'
@@ -156,9 +193,7 @@ COLOR_LEAK     = '#e74c3c'
 COLOR_DETECTED = '#3498db'
 COLOR_MONITOR  = '#f39c12'
 
-# ================================================================
 # UTILITY FUNCTIONS
-# ================================================================
 
 def create_directories():
     """Create all project directories. Call once at pipeline start."""
@@ -168,16 +203,16 @@ def create_directories():
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
-    print("✓ All directories verified/created")
+    print(" All directories verified/created")
 
 
 def verify_network_file() -> bool:
     """Check EPANET network file exists before simulation."""
     if NETWORK_FILE.exists():
-        print(f"✓ Network file found: {NETWORK_FILE}")
+        print(f" Network file found: {NETWORK_FILE}")
         return True
-    print(f"✗ Network file NOT found: {NETWORK_FILE}")
-    print("  → Place hanoi_network.inp in data/external/")
+    print(f" Network file NOT found: {NETWORK_FILE}")
+    print("  Place hanoi_network.inp in data/external/")
     return False
 
 
