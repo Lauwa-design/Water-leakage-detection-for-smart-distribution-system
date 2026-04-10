@@ -1,0 +1,74 @@
+{
+  "features": [
+    "night_flow_deviation",
+    "night_flow_anomaly",
+    "night_to_day_ratio",
+    "pressure_deviation",
+    "pressure_drop_alert",
+    "pressure_drop_deviation",
+    "pressure_cv",
+    "flow_deviation",
+    "high_flow_alert",
+    "flow_cv",
+    "flow_stability",
+    "demand_deviation",
+    "peak_demand_ratio",
+    "flow_demand_ratio",
+    "hydraulic_imbalance",
+    "mass_balance_error",
+    "flow_pressure_ratio",
+    "demand_pressure_ratio",
+    "pressure_drop",
+    "flow_anomaly_score",
+    "pressure_diff_1h",
+    "flow_diff_1h",
+    "demand_diff_1h",
+    "pressure_drop_rate",
+    "flow_spike_score",
+    "rolling_6h_pressure_mean",
+    "rolling_6h_flow_mean",
+    "rolling_6h_pressure_std",
+    "pressure_trend_6h",
+    "flow_excess_6h",
+    "rolling_12h_pressure_mean",
+    "rolling_12h_flow_mean",
+    "pressure_trend_12h",
+    "night_sustained_excess",
+    "slow_leak_score"
+  ],
+  "n_features": 35,
+  "instant_features": [
+    "pressure_diff_1h",
+    "flow_diff_1h",
+    "demand_diff_1h",
+    "pressure_drop_rate",
+    "flow_spike_score"
+  ],
+  "slow_features": [
+    "rolling_6h_pressure_mean",
+    "rolling_6h_flow_mean",
+    "rolling_6h_pressure_std",
+    "pressure_trend_6h",
+    "flow_excess_6h",
+    "rolling_12h_pressure_mean",
+    "rolling_12h_flow_mean",
+    "pressure_trend_12h",
+    "night_sustained_excess",
+    "slow_leak_score"
+  ],
+  "leak_type_classes": [
+    "continuous",
+    "demand",
+    "intermittent",
+    "no_leak",
+    "pressure"
+  ],
+  "instant_leak_types": [
+    "pressure",
+    "continuous"
+  ],
+  "slow_leak_types": [
+    "intermittent",
+    "demand"
+  ]
+}
