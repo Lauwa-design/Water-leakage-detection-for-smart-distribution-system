@@ -2,6 +2,7 @@
 from typing import Dict
 import pandas as pd
 import numpy as np
+import warnings
 
 
 class RealtimeFeatureExtractor:
@@ -43,12 +44,7 @@ class RealtimeFeatureExtractor:
         daily_var = float(flow.max() - flow.min()) if len(flow) > 1 else 0.0
 
         # Feature 5: Pressure-Flow Relationship - correlation coefficient
-        if len(flow) > 2 and len(pressure) > 2:
-            pressure_flow_corr = float(flow.corr(pressure))
-            if np.isnan(pressure_flow_corr):
-                pressure_flow_corr = 0.0
-        else:
-            pressure_flow_corr = 0.0
+        pressure_flow_corr = self._safe_correlation(flow, pressure)
 
         # Feature 6: Pressure-Drop Pattern - sustained pressure loss
         pressure_drop = float(pressure.max() - pressure.min())
@@ -77,6 +73,21 @@ class RealtimeFeatureExtractor:
             "pressure_drop_pattern": pressure_sustained_drop,
             "flow_trend": flow_trend,
         }
+
+    def _safe_correlation(self, series1: pd.Series, series2: pd.Series) -> float:
+        """Calculate correlation safely, handling zero-variance cases."""
+        if len(series1) < 3 or len(series2) < 3:
+            return 0.0
+        
+        # Check for zero variance (constant values)
+        if series1.std() == 0 or series2.std() == 0:
+            return 0.0
+        
+        # Suppress numpy warnings for correlation calculation
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', category=RuntimeWarning)
+            corr = float(series1.corr(series2))
+            return 0.0 if np.isnan(corr) else corr
 
     def _get_default_features(self) -> Dict[str, float]:
         """Return defaults when data is sparse."""

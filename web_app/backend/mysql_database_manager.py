@@ -294,6 +294,20 @@ class MySQLDatabaseManager:
             (meter_id, timestamp, confidence, leak_detected, leak_type, features)
         )
     
+    def add_leak_prediction(self, meter_id: str, confidence: float,
+                           leak_detected: bool, leak_type: str, features: str):
+        """Add leak prediction - alias for store_leak_prediction with auto timestamp"""
+        timestamp = datetime.now()
+        
+        # Convert numpy types to native Python types to avoid MySQL conversion errors
+        import numpy as np
+        if isinstance(leak_detected, (np.bool_, np.generic)):
+            leak_detected = bool(leak_detected)
+        if isinstance(confidence, (np.floating, np.generic)):
+            confidence = float(confidence)
+        
+        self.store_leak_prediction(meter_id, timestamp, confidence, leak_detected, leak_type, features)
+    
     def add_alert(self, meter_id: str, zone_id: str, severity: str, title: str, message: str):
         self._execute(
             "INSERT INTO alerts (meter_id, zone_id, severity, title, message) VALUES (%s, %s, %s, %s, %s)",

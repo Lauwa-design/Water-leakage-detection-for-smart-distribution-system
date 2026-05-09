@@ -102,20 +102,24 @@ class LeakDetectionModel:
             return False, 0.0, "None"
 
         try:
-            feature_array = np.array([[features.get(name, 0.0) for name in self.feature_list]])
+            # Create DataFrame with proper feature names to avoid sklearn warnings
+            feature_values = [features.get(name, 0.0) for name in self.feature_list]
+            feature_df = pd.DataFrame([feature_values], columns=self.feature_list)
 
             if self.scaler is not None:
                 try:
-                    feature_array = self.scaler.transform(feature_array)
+                    feature_array = self.scaler.transform(feature_df)
+                    # Convert back to DataFrame with feature names
+                    feature_df = pd.DataFrame(feature_array, columns=self.feature_list)
                 except Exception as exc:
                     print(f"Warning: could not scale features: {exc}")
 
             try:
                 if hasattr(self.binary_model, "predict_proba"):
-                    probabilities = self.binary_model.predict_proba(feature_array)[0]
+                    probabilities = self.binary_model.predict_proba(feature_df)[0]
                     leak_prob = probabilities[1] if len(probabilities) > 1 else probabilities[0]
                 else:
-                    leak_prob = float(self.binary_model.predict(feature_array)[0])
+                    leak_prob = float(self.binary_model.predict(feature_df)[0])
             except AttributeError as exc:
                 if "monotonic_cst" in str(exc):
                     leak_prob = self._fallback_prediction(features)
@@ -127,7 +131,7 @@ class LeakDetectionModel:
             if leak_detected:
                 if self.multi_model is not None and hasattr(self.multi_model, "predict"):
                     try:
-                        leak_type = str(self.multi_model.predict(feature_array)[0])
+                        leak_type = str(self.multi_model.predict(feature_df)[0])
                     except Exception:
                         leak_type = self._classify_leak_type(leak_prob, features)
                 else:
@@ -135,7 +139,8 @@ class LeakDetectionModel:
             else:
                 leak_type = "None"
 
-            return leak_detected, float(leak_prob), leak_type
+            # Convert to native Python types to avoid numpy type issues
+            return bool(leak_detected), float(leak_prob), str(leak_type)
         except Exception as exc:
             print(f"Prediction error: {exc}")
             return False, 0.0, "None"

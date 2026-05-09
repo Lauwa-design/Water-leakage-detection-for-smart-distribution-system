@@ -5,6 +5,11 @@ import json
 from datetime import datetime
 import sys
 import os
+import warnings
+
+# Suppress numpy correlation warnings for cleaner output
+warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='numpy')
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
