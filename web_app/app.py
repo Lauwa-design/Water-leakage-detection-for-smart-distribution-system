@@ -15,9 +15,14 @@ from page_components import (
     show_system_status,
     show_zones_assets,
     show_teams,
+    show_reports,
+    show_user_management,
+    show_meter_management,
+    show_zone_management,
 )
 from page_components.data_utils import bootstrap_demo_environment
 from page_components.ui import apply_theme
+from backend.rbac import is_system_admin, is_nrw_officer, is_field_technician
 
 
 st.set_page_config(
@@ -43,10 +48,24 @@ apply_theme(dark_mode=True)
 bootstrap_demo_environment()
 
 st.sidebar.title("THIWASCO")
-page = st.sidebar.radio(
-    "Navigation",
-    ["Overview", "Leak Analysis", "Alerts", "Teams", "Zones & Assets", "System Status"],
-)
+
+# Build navigation menu based on user role
+nav_options = ["Overview", "Leak Analysis", "Alerts", "System Status"]
+
+# Add role-specific pages
+if is_nrw_officer():
+    nav_options.extend(["Teams", "Reports"])
+
+if is_field_technician():
+    # Field Technicians can view their teams
+    nav_options.insert(3, "Teams")  # Insert after Alerts
+
+if is_system_admin():
+    nav_options.extend(["User Management", "Meter Management", "Zone Management", "Zones & Assets"])
+else:
+    nav_options.append("Zones & Assets")
+
+page = st.sidebar.radio("Navigation", nav_options)
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"Logged in as: {st.session_state.user_email}")
@@ -65,6 +84,14 @@ try:
         show_alerts()
     elif page == "Teams":
         show_teams()
+    elif page == "Reports":
+        show_reports()
+    elif page == "User Management":
+        show_user_management()
+    elif page == "Meter Management":
+        show_meter_management()
+    elif page == "Zone Management":
+        show_zone_management()
     elif page == "Zones & Assets":
         show_zones_assets()
     elif page == "System Status":

@@ -22,7 +22,7 @@ from backend.rbac import (
 
 def show_teams():
     """Main team management page"""
-    st.title("🤝 Team Management")
+    st.title("Team Management")
     
     current_role = get_current_user_role()
     current_user_id = get_current_user_id()
@@ -34,9 +34,9 @@ def show_teams():
     
     # Create tabs for different views
     if is_nrw_officer():
-        tab1, tab2, tab3 = st.tabs(["📋 All Teams", "➕ Create Team", "📊 Team Workload"])
+        tab1, tab2, tab3 = st.tabs(["All Teams", "Create Team", "Team Workload"])
     else:
-        tab1, tab2 = st.tabs(["📋 My Teams", "📊 Team Workload"])
+        tab1, tab2 = st.tabs(["My Teams", "Team Workload"])
     
     # Tab 1: View Teams
     with tab1:
@@ -65,7 +65,7 @@ def show_all_teams():
     teams_df = db_manager.get_all_teams()
     
     if teams_df.empty:
-        st.info("📭 No teams have been created yet.")
+        st.info("No teams have been created yet.")
         return
     
     # Filter active teams
@@ -79,7 +79,7 @@ def show_all_teams():
     
     # Display teams as cards
     for idx, team in active_teams.iterrows():
-        with st.expander(f"🏷️ {team['name']} ({team['member_count']} members)", expanded=False):
+        with st.expander(f"{team['name']} ({team['member_count']} members)", expanded=False):
             col1, col2 = st.columns([3, 1])
             
             with col1:
@@ -99,12 +99,12 @@ def show_all_teams():
             with col2:
                 # Management buttons (NRW Officer only)
                 if has_permission(Permissions.TEAM_UPDATE):
-                    if st.button(f"✏️ Edit", key=f"edit_{team['id']}"):
+                    if st.button(f"Edit", key=f"edit_{team['id']}"):
                         st.session_state[f'editing_team_{team["id"]}'] = True
                         st.rerun()
                 
                 if has_permission(Permissions.TEAM_DELETE):
-                    if st.button(f"🗑️ Delete", key=f"delete_{team['id']}"):
+                    if st.button(f"Delete", key=f"delete_{team['id']}"):
                         st.session_state[f'confirm_delete_{team["id"]}'] = True
                         st.rerun()
             
@@ -114,7 +114,7 @@ def show_all_teams():
             
             # Delete confirmation
             if st.session_state.get(f'confirm_delete_{team["id"]}', False):
-                st.warning(f"⚠️ Are you sure you want to delete team **{team['name']}**?")
+                st.warning(f"Are you sure you want to delete team **{team['name']}**?")
                 col_yes, col_no = st.columns(2)
                 with col_yes:
                     if st.button("Yes, Delete", key=f"confirm_yes_{team['id']}"):
@@ -138,14 +138,14 @@ def show_my_teams(user_id: str):
     teams_df = db_manager.get_teams_by_user(user_id)
     
     if teams_df.empty:
-        st.info("📭 You are not assigned to any teams yet.")
+        st.info("You are not assigned to any teams yet.")
         return
     
     st.write(f"**You are a member of {len(teams_df)} team(s)**")
     
     # Display teams as cards
     for idx, team in teams_df.iterrows():
-        with st.expander(f"🏷️ {team['name']} ({team['member_count']} members)", expanded=False):
+        with st.expander(f"{team['name']} ({team['member_count']} members)", expanded=False):
             st.write(f"**Description:** {team['description'] or 'No description'}")
             st.write(f"**Created:** {team['created_at'].strftime('%Y-%m-%d %H:%M')}")
             
@@ -180,7 +180,7 @@ def show_create_team_form():
         technicians_df = db_manager.get_field_technicians()
         
         if technicians_df.empty:
-            st.error("❌ No Field Technicians available. Please create Field Technician users first.")
+            st.error("No Field Technicians available. Please create Field Technician users first.")
             st.form_submit_button("Create Team", disabled=True)
             return
         
@@ -195,15 +195,15 @@ def show_create_team_form():
             help="Select between 2 and 6 Field Technicians"
         )
         
-        submitted = st.form_submit_button("✅ Create Team")
+        submitted = st.form_submit_button("Create Team")
         
         if submitted:
             if not team_name.strip():
-                st.error("❌ Team name is required")
+                st.error("Team name is required")
             elif len(selected_members) < 2:
-                st.error("❌ Team must have at least 2 members")
+                st.error("Team must have at least 2 members")
             elif len(selected_members) > 6:
-                st.error("❌ Team cannot have more than 6 members")
+                st.error("Team cannot have more than 6 members")
             else:
                 # Convert selected names to user IDs
                 member_ids = [tech_options[name] for name in selected_members]
@@ -217,11 +217,10 @@ def show_create_team_form():
                 )
                 
                 if success:
-                    st.success(f"✅ {msg}")
-                    st.balloons()
+                    st.success(f"{msg}")
                     st.rerun()
                 else:
-                    st.error(f"❌ {msg}")
+                    st.error(f"{msg}")
 
 
 def show_edit_team_form(team_id: int):
@@ -247,7 +246,7 @@ def show_edit_team_form(team_id: int):
         technicians_df = db_manager.get_field_technicians()
         
         if technicians_df.empty:
-            st.error("❌ No Field Technicians available")
+            st.error("No Field Technicians available")
             st.form_submit_button("Update Team", disabled=True)
             return
         
@@ -269,9 +268,9 @@ def show_edit_team_form(team_id: int):
         
         col1, col2 = st.columns(2)
         with col1:
-            submitted = st.form_submit_button("💾 Update Team")
+            submitted = st.form_submit_button("Update Team")
         with col2:
-            cancelled = st.form_submit_button("❌ Cancel")
+            cancelled = st.form_submit_button("Cancel")
         
         if cancelled:
             st.session_state.pop(f'editing_team_{team_id}', None)
@@ -279,11 +278,11 @@ def show_edit_team_form(team_id: int):
         
         if submitted:
             if not team_name.strip():
-                st.error("❌ Team name is required")
+                st.error("Team name is required")
             elif len(selected_members) < 2:
-                st.error("❌ Team must have at least 2 members")
+                st.error("Team must have at least 2 members")
             elif len(selected_members) > 6:
-                st.error("❌ Team cannot have more than 6 members")
+                st.error("Team cannot have more than 6 members")
             else:
                 # Convert selected names to user IDs
                 member_ids = [tech_options[name] for name in selected_members]
@@ -298,11 +297,11 @@ def show_edit_team_form(team_id: int):
                 )
                 
                 if success:
-                    st.success(f"✅ {msg}")
+                    st.success(f"{msg}")
                     st.session_state.pop(f'editing_team_{team_id}', None)
                     st.rerun()
                 else:
-                    st.error(f"❌ {msg}")
+                    st.error(f"{msg}")
 
 
 def show_team_workload():
@@ -312,7 +311,7 @@ def show_team_workload():
     workload_df = db_manager.get_team_workload()
     
     if workload_df.empty:
-        st.info("📭 No teams with workload data available.")
+        st.info("No teams with workload data available.")
         return
     
     # Display as a table

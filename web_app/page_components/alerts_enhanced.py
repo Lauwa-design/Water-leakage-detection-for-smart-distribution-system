@@ -15,26 +15,13 @@ from backend.rbac import (
     Permissions,
     can_assign_alerts,
     can_resolve_alerts,
-    get_current_user_id,
-    get_current_user_role,
-    is_field_technician
+    get_current_user_id
 )
 
 
 def show_alerts():
     """Enhanced alerts management page with status workflow"""
     st.title("Alerts Management")
-    
-    current_user_id = get_current_user_id()
-    current_role = get_current_user_role()
-    
-    # Check if Field Technician - show only their team's alerts
-    if is_field_technician():
-        st.write("View alerts assigned to your teams.")
-        show_field_technician_alerts(current_user_id)
-        return
-    
-    # For NRW Officer and System Admin - show all alerts
     st.write("Review and manage leak alerts, assign to teams, and track resolution status.")
     
     # Get alert statistics
@@ -168,15 +155,11 @@ def show_all_alerts_view(severity_filter: str, team_filter: str, hours: int):
         if not status_alerts.empty:
             st.subheader(f"{status.upper()} ({len(status_alerts)})")
             for idx, alert in status_alerts.iterrows():
-                # Use 'all' prefix for alerts in the "All Alerts" tab
-                show_alert_card(alert, f"all_{status}")
+                show_alert_card(alert, status)
 
 
 def show_alert_card(alert: pd.Series, status: str):
     """Display individual alert card"""
-    
-    # Create unique key prefix based on alert ID and status
-    key_prefix = f"{status}_{alert['id']}"
     
     # Status badge color
     if status == 'new':
@@ -224,12 +207,12 @@ def show_alert_card(alert: pd.Series, status: str):
         with col2:
             # Action buttons (NRW Officer only)
             if can_assign_alerts() and alert['status'] in ['new', 'assigned']:
-                if st.button("Assign to Team", key=f"assign_{key_prefix}"):
-                    st.session_state[f'assigning_{key_prefix}'] = True
+                if st.button("Assign to Team", key=f"assign_{alert['id']}"):
+                    st.session_state[f'assigning_{alert["id"]}'] = True
                     st.rerun()
             
             if can_resolve_alerts() and alert['status'] != 'resolved':
-                if st.button("Mark as Resolved", key=f"resolve_{key_prefix}"):
+                if st.button("Mark as Resolved", key=f"resolve_{alert['id']}"):
                     success, msg = alert_manager.resolve_alert(
                         alert['id'],
                         get_current_user_id()
@@ -245,13 +228,13 @@ def show_alert_card(alert: pd.Series, status: str):
                         st.error(msg)
         
         # Inline assignment form
-        if st.session_state.get(f'assigning_{key_prefix}', False):
-            show_inline_assignment_form(alert['id'], key_prefix)
+        if st.session_state.get(f'assigning_{alert["id"]}', False):
+            show_inline_assignment_form(alert['id'])
         
         st.markdown("---")
 
 
-def show_inline_assignment_form(alert_id: int, key_prefix: str):
+def show_inline_assignment_form(alert_id: int):
     """Show inline form to assign alert to team"""
     st.markdown("**Assign to Team:**")
     
@@ -272,11 +255,11 @@ def show_inline_assignment_form(alert_id: int, key_prefix: str):
         selected_team = st.selectbox(
             "Select Team",
             options=list(team_options.keys()),
-            key=f"team_select_{key_prefix}"
+            key=f"team_select_{alert_id}"
         )
     
     with col2:
-        if st.button("Assign", key=f"confirm_assign_{key_prefix}"):
+        if st.button("Assign", key=f"confirm_assign_{alert_id}"):
             team_id = team_options[selected_team]
             success, msg = alert_manager.assign_alert_to_team(
                 alert_id,
@@ -285,7 +268,7 @@ def show_inline_assignment_form(alert_id: int, key_prefix: str):
             )
             if success:
                 st.success(msg)
-                st.session_state.pop(f'assigning_{key_prefix}', None)
+                st.session_state.pop(f'assigning_{alert_id}', None)
                 # Clear cache and refresh
                 st.cache_data.clear()
                 if 'monitoring_data_24' in st.session_state:
@@ -294,8 +277,8 @@ def show_inline_assignment_form(alert_id: int, key_prefix: str):
             else:
                 st.error(msg)
         
-        if st.button("Cancel", key=f"cancel_assign_{key_prefix}"):
-            st.session_state.pop(f'assigning_{key_prefix}', None)
+        if st.button("Cancel", key=f"cancel_assign_{alert_id}"):
+            st.session_state.pop(f'assigning_{alert_id}', None)
             st.rerun()
 
 
@@ -359,145 +342,3 @@ def show_bulk_assignment_ui(alerts_df: pd.DataFrame):
                     st.warning(f"Failed to assign {failure_count} alert(s)")
                     for error in errors:
                         st.error(error)
-
-
-
-def show_field_technician_alerts(user_id: str):
-    """Display alerts for Field Technician - only their team's alerts"""
-    
-    # Get user's teams
-    teams_df = db_manager.get_teams_by_user(user_id)
-    
-    if teams_df.empty:
-        st.info("You are not assigned to any teams yet. Contact your supervisor to be added to a team.")
-        return
-    
-    # Display team membership
-    st.markdown("### Your Teams")
-    team_names = teams_df['name'].tolist()
-    st.write(f"**Member of:** {', '.join(team_names)}")
-    
-    # Filters
-    st.markdown("---")
-    col_filter1, col_filter2, col_filter3 = st.columns(3)
-    
-    with col_filter1:
-        severity_filter = st.selectbox(
-            "Severity",
-            ["All", "critical", "warning", "normal"],
-            format_func=str.title
-        )
-    
-    with col_filter2:
-        status_filter = st.selectbox(
-            "Status",
-            ["All", "new", "assigned", "resolved"],
-            format_func=str.title
-        )
-    
-    with col_filter3:
-        time_filter = st.selectbox(
-            "Time Range",
-            [("Last 24 hours", 24), ("Last 48 hours", 48), ("Last 7 days", 168)],
-            format_func=lambda x: x[0]
-        )
-        hours = time_filter[1]
-    
-    # Get alerts for user's teams
-    alerts_df = db_manager.get_alerts_for_user_teams(
-        user_id=user_id,
-        status=None if status_filter == "All" else status_filter,
-        hours=hours
-    )
-    
-    # Apply severity filter
-    if severity_filter != "All":
-        alerts_df = alerts_df[alerts_df['severity'] == severity_filter]
-    
-    if alerts_df.empty:
-        st.info("No alerts found for your teams with the selected filters.")
-        return
-    
-    # Display summary metrics
-    st.markdown("---")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_alerts = len(alerts_df)
-        st.metric("Total Alerts", total_alerts)
-    
-    with col2:
-        new_count = len(alerts_df[alerts_df['status'] == 'new'])
-        st.metric("New", new_count)
-    
-    with col3:
-        assigned_count = len(alerts_df[alerts_df['status'] == 'assigned'])
-        st.metric("Assigned", assigned_count)
-    
-    with col4:
-        resolved_count = len(alerts_df[alerts_df['status'] == 'resolved'])
-        st.metric("Resolved", resolved_count)
-    
-    # Display alerts grouped by status
-    st.markdown("---")
-    st.markdown("### Alerts")
-    
-    # Group by status
-    for status in ['new', 'assigned', 'resolved']:
-        status_alerts = alerts_df[alerts_df['status'] == status]
-        if not status_alerts.empty:
-            st.subheader(f"{status.upper()} ({len(status_alerts)})")
-            
-            for idx, alert in status_alerts.iterrows():
-                show_field_tech_alert_card(alert, status)
-
-
-def show_field_tech_alert_card(alert: pd.Series, status: str):
-    """Display alert card for Field Technician (read-only)"""
-    
-    # Create unique key prefix
-    key_prefix = f"ft_{status}_{alert['id']}"
-    
-    # Severity badge
-    severity_colors = {
-        'critical': '#FFEBEE',
-        'warning': '#FFF3E0',
-        'normal': '#F5F5F5'
-    }
-    
-    with st.container():
-        st.markdown(f"""
-        <div style="padding: 15px; border-left: 4px solid {'#F44336' if alert['severity']=='critical' else '#FF9800' if alert['severity']=='warning' else '#9E9E9E'}; 
-                    background-color: {severity_colors.get(alert['severity'], '#F5F5F5')}; margin-bottom: 10px; border-radius: 5px;">
-            <strong>{alert['meter_id']}</strong> - {alert.get('title', 'Leak Detected')}
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.write(f"**Status:** {alert['status'].upper()}")
-            st.write(f"**Severity:** {alert['severity'].upper()}")
-            st.write(f"**Zone:** {alert.get('zone_id', 'N/A')}")
-            st.write(f"**Assigned Team:** {alert.get('team_name', 'N/A')}")
-            st.write(f"**Created:** {alert['created_at'].strftime('%Y-%m-%d %H:%M') if pd.notna(alert['created_at']) else 'N/A'}")
-            
-            if alert['status'] == 'resolved' and pd.notna(alert.get('resolved_at')):
-                st.write(f"**Resolved:** {alert['resolved_at'].strftime('%Y-%m-%d %H:%M')}")
-                if alert.get('resolved_by_name'):
-                    st.write(f"**Resolved By:** {alert['resolved_by_name']}")
-            
-            # Show message if available
-            if alert.get('message'):
-                st.write(f"**Details:** {alert['message']}")
-        
-        with col2:
-            # Status badge
-            if status == 'new':
-                st.info("NEW")
-            elif status == 'assigned':
-                st.warning("ASSIGNED")
-            else:
-                st.success("RESOLVED")
-        
-        st.markdown("---")

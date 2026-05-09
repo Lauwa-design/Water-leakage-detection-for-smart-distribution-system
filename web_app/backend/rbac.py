@@ -29,12 +29,26 @@ class Permissions:
     ALERT_ASSIGN = "alert:assign"
     ALERT_READ = "alert:read"
     ALERT_UPDATE = "alert:update"
+    ALERT_RESOLVE = "alert:resolve"
     
     # Zone permissions
     ZONE_CREATE = "zone:create"
     ZONE_READ = "zone:read"
     ZONE_UPDATE = "zone:update"
     ZONE_DELETE = "zone:delete"
+    
+    # Meter permissions
+    METER_CREATE = "meter:create"
+    METER_READ = "meter:read"
+    METER_UPDATE = "meter:update"
+    METER_DELETE = "meter:delete"
+    
+    # User permissions
+    USER_CREATE = "user:create"
+    USER_READ = "user:read"
+    USER_UPDATE = "user:update"
+    USER_DELETE = "user:delete"
+    USER_ASSIGN_ROLE = "user:assign_role"
 
 
 # Role-Permission mapping
@@ -50,12 +64,13 @@ ROLE_PERMISSIONS = {
         Permissions.ALERT_ASSIGN,
         Permissions.ALERT_READ,
         Permissions.ALERT_UPDATE,
+        Permissions.ALERT_RESOLVE,
         
-        # Zone permissions
-        Permissions.ZONE_CREATE,
+        # Zone permissions - Read only
         Permissions.ZONE_READ,
-        Permissions.ZONE_UPDATE,
-        Permissions.ZONE_DELETE,
+        
+        # Meter permissions - Read only
+        Permissions.METER_READ,
     ],
     
     Roles.FIELD_TECHNICIAN: [
@@ -67,21 +82,36 @@ ROLE_PERMISSIONS = {
         
         # Zone permissions - Read only
         Permissions.ZONE_READ,
+        
+        # Meter permissions - Read only
+        Permissions.METER_READ,
     ],
     
     Roles.SYSTEM_ADMIN: [
         # Team permissions - Read only
         Permissions.TEAM_READ,
         
-        # Alert permissions - Full access
+        # Alert permissions - Read access
         Permissions.ALERT_READ,
-        Permissions.ALERT_UPDATE,
         
         # Zone permissions - Full CRUD
         Permissions.ZONE_CREATE,
         Permissions.ZONE_READ,
         Permissions.ZONE_UPDATE,
         Permissions.ZONE_DELETE,
+        
+        # Meter permissions - Full CRUD
+        Permissions.METER_CREATE,
+        Permissions.METER_READ,
+        Permissions.METER_UPDATE,
+        Permissions.METER_DELETE,
+        
+        # User permissions - Full CRUD + Role Assignment
+        Permissions.USER_CREATE,
+        Permissions.USER_READ,
+        Permissions.USER_UPDATE,
+        Permissions.USER_DELETE,
+        Permissions.USER_ASSIGN_ROLE,
     ],
 }
 
@@ -282,3 +312,35 @@ def can_assign_alerts(user_role: Optional[str] = None) -> bool:
 def can_view_teams(user_role: Optional[str] = None) -> bool:
     """Check if user can view teams"""
     return has_permission(Permissions.TEAM_READ, user_role)
+
+
+def can_resolve_alerts(user_role: Optional[str] = None) -> bool:
+    """Check if user can resolve alerts"""
+    return has_permission(Permissions.ALERT_RESOLVE, user_role)
+
+
+def can_manage_users(user_role: Optional[str] = None) -> bool:
+    """Check if user can manage users"""
+    return has_any_permission([
+        Permissions.USER_CREATE,
+        Permissions.USER_UPDATE,
+        Permissions.USER_DELETE
+    ], user_role)
+
+
+def can_manage_meters(user_role: Optional[str] = None) -> bool:
+    """Check if user can manage meters"""
+    return has_any_permission([
+        Permissions.METER_CREATE,
+        Permissions.METER_UPDATE,
+        Permissions.METER_DELETE
+    ], user_role)
+
+
+def can_manage_zones(user_role: Optional[str] = None) -> bool:
+    """Check if user can manage zones"""
+    return has_any_permission([
+        Permissions.ZONE_CREATE,
+        Permissions.ZONE_UPDATE,
+        Permissions.ZONE_DELETE
+    ], user_role)

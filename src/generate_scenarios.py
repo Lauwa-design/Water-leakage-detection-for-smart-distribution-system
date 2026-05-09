@@ -165,6 +165,64 @@ def sample_leak_signature(rng: np.random.Generator) -> dict[str, float | int | s
     }
 
 
+def sample_leak_type_balanced(rng: np.random.Generator) -> str:
+    """
+    Sample leak type with balanced distribution.
+    Returns: 'extreme_leak', 'moderate_leak', 'slow_leak', or 'none'
+    """
+    # Equal probability for each leak type and no leak
+    leak_types = ['extreme_leak', 'moderate_leak', 'slow_leak', 'none']
+    return str(rng.choice(leak_types))
+
+
+def sample_leak_signature_by_type(leak_type: str, rng: np.random.Generator) -> dict[str, float | int | str]:
+    """
+    Sample a leak signature for a specific leak type with appropriate magnitude.
+    Ensures each leak type has distinct characteristics.
+    """
+    if leak_type == "extreme_leak":
+        # Extreme leaks: high magnitude, short duration
+        magnitude_lpm = float(rng.uniform(EXTREME_LEAK_THRESHOLD, LEAK_MAG_MAX))
+        start_idx = int(rng.integers(72, 240))  # 6 AM to 8 PM
+        duration_steps = int(rng.integers(6, 25))  # 30 min to 2 hours
+    elif leak_type == "moderate_leak":
+        # Moderate leaks: medium magnitude, medium duration
+        magnitude_lpm = float(rng.uniform(MODERATE_LEAK_THRESHOLD, EXTREME_LEAK_THRESHOLD - 1))
+        start_idx = int(rng.integers(48, 228))  # 4 AM to 7 PM
+        duration_steps = int(rng.integers(24, 73))  # 2 to 6 hours
+    elif leak_type == "slow_leak":
+        # Slow leaks: low magnitude, long duration
+        magnitude_lpm = float(rng.uniform(SLOW_LEAK_THRESHOLD, MODERATE_LEAK_THRESHOLD - 1))
+        start_idx = int(rng.integers(0, 216))  # midnight to 6 PM
+        duration_steps = int(rng.integers(48, 169))  # 4 to 14 hours
+    else:
+        # No leak
+        return {
+            "leak_type": "none",
+            "magnitude_lpm": 0.0,
+            "start_idx": -1,
+            "end_idx": -1,
+            "start_time": -1,
+            "end_time": -1,
+            "leak_area_m2": 0.0,
+        }
+
+    end_idx = min(start_idx + duration_steps, DAILY_READINGS - 1)
+    start_time = start_idx * METER_READING_INTERVAL
+    end_time = min((end_idx + 1) * METER_READING_INTERVAL, DAILY_READINGS * METER_READING_INTERVAL - METER_READING_INTERVAL)
+    leak_area = flow_lpm_to_leak_area(magnitude_lpm)
+
+    return {
+        "leak_type": leak_type,
+        "magnitude_lpm": magnitude_lpm,
+        "start_idx": start_idx,
+        "end_idx": end_idx,
+        "start_time": start_time,
+        "end_time": end_time,
+        "leak_area_m2": leak_area,
+    }
+
+
 def choose_observation_nodes(wn: wntr.network.WaterNetworkModel,
                              rng: np.random.Generator,
                              leak_node: str | None) -> list[str]:
@@ -185,21 +243,36 @@ def choose_observation_nodes(wn: wntr.network.WaterNetworkModel,
 
 def simulate_hydraulic_scenario(inp_file: Path,
                                 scenario_id: int,
-                                rng: np.random.Generator) -> pd.DataFrame:
-    """Run one WNTR/EPANET scenario and return a meter-style time series."""
+                                rng: np.random.Generator,
+                                force_leak_type: str | None = None) -> pd.DataFrame:
+    """
+    Run one WNTR/EPANET scenario and return a meter-style time series.
+    
+    Args:
+        inp_file: Path to EPANET .inp file
+        scenario_id: Unique scenario identifier
+        rng: Random number generator
+        force_leak_type: If provided, force this leak type ('extreme_leak', 'moderate_leak', 'slow_leak', 'none')
+    """
     wn = wntr.network.WaterNetworkModel(inp_file)
     wn.options.time.duration = 24 * 3600
     wn.options.time.hydraulic_timestep = METER_READING_INTERVAL
     wn.options.time.report_timestep = METER_READING_INTERVAL
 
-    has_leak = bool(rng.choice([0, 1], p=[0.5, 0.5]))
+    # Determine leak type - either forced or sampled
+    if force_leak_type is not None:
+        leak_type_to_use = force_leak_type
+    else:
+        leak_type_to_use = sample_leak_type_balanced(rng)
+    
+    has_leak = leak_type_to_use != 'none'
     leak_signature = None
     leak_node = None
 
     if has_leak:
         junctions = list(wn.junction_name_list)
         leak_node = str(rng.choice(junctions))
-        leak_signature = sample_leak_signature(rng)
+        leak_signature = sample_leak_signature_by_type(leak_type_to_use, rng)
         wn.get_node(leak_node).add_leak(
             wn,
             area=float(leak_signature["leak_area_m2"]),
@@ -302,15 +375,39 @@ def simulate_hydraulic_scenario(inp_file: Path,
 def generate_synthetic_fallback() -> None:
     """
     Fallback generation with hydraulic-style signatures when WNTR is unavailable.
-    The fallback still emits the legacy columns the feature extractor expects.
+    Generates BALANCED dataset with equal distribution of leak types.
     """
     rng = np.random.default_rng(RANDOM_STATE)
     all_data = []
     num_scenarios = get_num_scenarios()
+    
+    # Calculate balanced distribution
+    scenarios_per_type = num_scenarios // 4  # 4 types: extreme, moderate, slow, none
+    remainder = num_scenarios % 4
+    
+    # Create balanced scenario plan
+    scenario_plan = (
+        ['extreme_leak'] * scenarios_per_type +
+        ['moderate_leak'] * scenarios_per_type +
+        ['slow_leak'] * scenarios_per_type +
+        ['none'] * scenarios_per_type +
+        ['none'] * remainder  # Add remainder to no-leak scenarios
+    )
+    
+    # Shuffle to randomize order
+    rng.shuffle(scenario_plan)
+    
+    print(f"Generating BALANCED dataset:")
+    print(f"  - Extreme leaks: {scenario_plan.count('extreme_leak')}")
+    print(f"  - Moderate leaks: {scenario_plan.count('moderate_leak')}")
+    print(f"  - Slow leaks: {scenario_plan.count('slow_leak')}")
+    print(f"  - No leaks: {scenario_plan.count('none')}")
 
     for i in range(num_scenarios):
-        has_leak = bool(rng.choice([0, 1], p=[0.5, 0.5]))
-        leak_signature = sample_leak_signature(rng) if has_leak else None
+        leak_type_to_generate = scenario_plan[i]
+        has_leak = leak_type_to_generate != 'none'
+        leak_signature = sample_leak_signature_by_type(leak_type_to_generate, rng) if has_leak else None
+        
         time_index = np.arange(DAILY_READINGS)
         meter_size_mm = int(rng.choice(METER_SIZE_OPTIONS_MM))
 
@@ -413,14 +510,20 @@ def generate_synthetic_fallback() -> None:
         )
 
         if (i + 1) % 100 == 0:
-            print(f"Generated {i + 1}/{NUM_SCENARIOS} scenarios (fallback)")
+            print(f"Generated {i + 1}/{num_scenarios} scenarios (fallback)")
 
-    pd.concat(all_data, ignore_index=True).to_csv(RAW_DIR / "simulated_leaks.csv", index=False)
-    print(f"[OK] Generated {num_scenarios} fallback scenarios with hydraulic-style signatures.")
+    final_df = pd.concat(all_data, ignore_index=True)
+    final_df.to_csv(RAW_DIR / "simulated_leaks.csv", index=False)
+    
+    # Print final distribution
+    print(f"\n[OK] Generated {num_scenarios} BALANCED fallback scenarios:")
+    print(f"  Final distribution:")
+    print(final_df['leak_type'].value_counts().to_string())
+    print(f"\nOutput saved to: {RAW_DIR / 'simulated_leaks.csv'}")
 
 
 def generate_scenarios() -> None:
-    """Generate scenarios using hydraulic simulation where possible."""
+    """Generate BALANCED scenarios using hydraulic simulation where possible."""
     rng = np.random.default_rng(RANDOM_STATE)
     inp_file = Path(__file__).resolve().parent.parent / "data" / "external" / "hanoi_network.inp"
     num_scenarios = get_num_scenarios()
@@ -432,12 +535,35 @@ def generate_scenarios() -> None:
         generate_synthetic_fallback()
         return
 
-    # Ensure output directory exists and handle file overwrite
+    # Ensure output directory exists
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     
     # Check if file exists and warn about overwrite
     if output_file.exists():
         print(f"WARNING: Overwriting existing file: {output_file}")
+
+    # Calculate balanced distribution
+    scenarios_per_type = num_scenarios // 4  # 4 types: extreme, moderate, slow, none
+    remainder = num_scenarios % 4
+    
+    # Create balanced scenario plan
+    scenario_plan = (
+        ['extreme_leak'] * scenarios_per_type +
+        ['moderate_leak'] * scenarios_per_type +
+        ['slow_leak'] * scenarios_per_type +
+        ['none'] * scenarios_per_type +
+        ['none'] * remainder  # Add remainder to no-leak scenarios
+    )
+    
+    # Shuffle to randomize order
+    rng.shuffle(scenario_plan)
+    
+    print(f"\nGenerating BALANCED dataset with {num_scenarios} scenarios:")
+    print(f"  - Extreme leaks: {scenario_plan.count('extreme_leak')}")
+    print(f"  - Moderate leaks: {scenario_plan.count('moderate_leak')}")
+    print(f"  - Slow leaks: {scenario_plan.count('slow_leak')}")
+    print(f"  - No leaks: {scenario_plan.count('none')}")
+    print()
 
     all_data = []
     batch_size = 50  # Process in batches to optimize memory usage
@@ -446,7 +572,9 @@ def generate_scenarios() -> None:
     try:
         for scenario_id in range(num_scenarios):
             try:
-                scenario_data = simulate_hydraulic_scenario(inp_file, scenario_id, rng)
+                # Use the pre-planned leak type for this scenario
+                forced_leak_type = scenario_plan[scenario_id]
+                scenario_data = simulate_hydraulic_scenario(inp_file, scenario_id, rng, force_leak_type=forced_leak_type)
                 batch_data.append(scenario_data)
                 
                 # Process batch when it reaches batch_size or at the end
@@ -464,15 +592,20 @@ def generate_scenarios() -> None:
                 print(f"WARNING: Failed to generate scenario {scenario_id}: {scenario_exc}")
                 continue
 
-        # Concatenate all batches and save with overwrite protection
+        # Concatenate all batches and save
         if all_data:
             final_df = pd.concat(all_data, ignore_index=True)
             
             # Save with overwrite handling
             try:
                 final_df.to_csv(output_file, index=False, mode='w')
-                print(f"[OK] Generated {len(final_df)} records from {num_scenarios} hydraulic scenarios using WNTR/EPANET.")
+                print(f"\n[OK] Generated {len(final_df)} records from {num_scenarios} BALANCED hydraulic scenarios.")
                 print(f"Output saved to: {output_file}")
+                
+                # Print final distribution
+                print(f"\nFinal leak type distribution:")
+                print(final_df['leak_type'].value_counts().to_string())
+                
             except PermissionError:
                 print(f"ERROR: Permission denied writing to {output_file}")
                 print("Please close the file if it's open in another program")

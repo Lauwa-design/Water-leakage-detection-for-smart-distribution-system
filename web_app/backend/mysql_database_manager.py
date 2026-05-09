@@ -138,7 +138,9 @@ class MySQLDatabaseManager:
                 message TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 resolved_at TIMESTAMP,
-                FOREIGN KEY (meter_id) REFERENCES meters(meter_id)
+                resolved_by VARCHAR(50),
+                FOREIGN KEY (meter_id) REFERENCES meters(meter_id),
+                FOREIGN KEY (resolved_by) REFERENCES users(user_id)
             )
         ''')
         
@@ -204,6 +206,23 @@ class MySQLDatabaseManager:
                 ADD FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL
             ''')
         
+        # Add resolved_by to alerts table if it doesn't exist
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+            AND TABLE_NAME = 'alerts'
+            AND COLUMN_NAME = 'resolved_by'
+        """, (self.config['database'],))
+        
+        result = cursor.fetchone()
+        if result[0] == 0:
+            cursor.execute('''
+                ALTER TABLE alerts 
+                ADD COLUMN resolved_by VARCHAR(50),
+                ADD FOREIGN KEY (resolved_by) REFERENCES users(user_id)
+            ''')
+        
         conn.commit()
         cursor.close()
     
@@ -261,7 +280,7 @@ class MySQLDatabaseManager:
             (since,)
         )
     
-    def get_alerts(self, severity: Optional[str] = None, status: Optional[str] = None, hours: int = 24) -> pd.DataFrame:
+    def get_alerts(self, severity: Optional[str] = None, status: Optional[str] = None, team_id: Optional[int] = None, hours: int = 24) -> pd.DataFrame:
         since = datetime.now() - timedelta(hours=hours)
         query = "SELECT * FROM alerts WHERE created_at > %s"
         params = [since]
@@ -272,6 +291,11 @@ class MySQLDatabaseManager:
         if status:
             query += " AND status = %s"
             params.append(status)
+        if team_id is not None:
+            query += " AND team_id = %s"
+            params.append(team_id)
+        
+        query += " ORDER BY created_at DESC"
         
         return self._query_to_df(query, tuple(params))
     
@@ -325,6 +349,13 @@ class MySQLDatabaseManager:
     
     def add_meter(self, meter_id: str, zone_id: str, location: str, meter_type: str,
                   status: str, flow_rate: float, description: str) -> bool:
+        """Add a new meter - validates zone exists first"""
+        # Verify zone exists before creating meter
+        zone_df = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if zone_df.empty:
+            print(f"Warning: Zone '{zone_id}' does not exist. Meter '{meter_id}' not created.")
+            return False
+        
         try:
             self._execute(
                 "INSERT INTO meters (meter_id, zone_id, location, meter_type, status, flow_rate, description) VALUES (%s, %s, %s, %s, %s, %s, %s)",
@@ -722,11 +753,11 @@ class MySQLDatabaseManager:
     
     def assign_alert_to_team(self, alert_id: int, team_id: int, assigned_by: str) -> tuple[bool, str]:
         """
-        Assign an alert to a team
+        Assign an alert to a team and update status to 'assigned'
         Returns: (success, message)
         """
         # Verify alert exists
-        alert_df = self._query_to_df("SELECT id FROM alerts WHERE id = %s", (alert_id,))
+        alert_df = self._query_to_df("SELECT id, status FROM alerts WHERE id = %s", (alert_id,))
         if alert_df.empty:
             return False, "Alert not found"
         
@@ -739,7 +770,7 @@ class MySQLDatabaseManager:
         
         try:
             self._execute(
-                "UPDATE alerts SET team_id = %s WHERE id = %s",
+                "UPDATE alerts SET team_id = %s, status = 'assigned' WHERE id = %s",
                 (team_id, alert_id)
             )
             return True, f"Alert assigned to team '{team['name']}'"
@@ -749,15 +780,50 @@ class MySQLDatabaseManager:
     
     def unassign_alert_from_team(self, alert_id: int) -> tuple[bool, str]:
         """
-        Remove team assignment from an alert
+        Remove team assignment from an alert and revert status to 'new'
         Returns: (success, message)
         """
         try:
             self._execute(
-                "UPDATE alerts SET team_id = NULL WHERE id = %s",
+                "UPDATE alerts SET team_id = NULL, status = 'new' WHERE id = %s",
                 (alert_id,)
             )
             return True, "Alert unassigned from team"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def resolve_alert(self, alert_id: int, resolved_by: str) -> tuple[bool, str]:
+        """
+        Mark an alert as resolved
+        Returns: (success, message)
+        """
+        # Verify alert exists
+        alert_df = self._query_to_df("SELECT id, status FROM alerts WHERE id = %s", (alert_id,))
+        if alert_df.empty:
+            return False, "Alert not found"
+        
+        try:
+            self._execute(
+                "UPDATE alerts SET status = 'resolved', resolved_at = %s, resolved_by = %s WHERE id = %s",
+                (datetime.now(), resolved_by, alert_id)
+            )
+            return True, "Alert marked as resolved"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def reopen_alert(self, alert_id: int) -> tuple[bool, str]:
+        """
+        Reopen a resolved alert (set status back to 'new')
+        Returns: (success, message)
+        """
+        try:
+            self._execute(
+                "UPDATE alerts SET status = 'new', resolved_at = NULL, resolved_by = NULL, team_id = NULL WHERE id = %s",
+                (alert_id,)
+            )
+            return True, "Alert reopened"
             
         except mysql.connector.Error as e:
             return False, f"Database error: {str(e)}"
@@ -774,14 +840,60 @@ class MySQLDatabaseManager:
         ''', (team_id, since))
     
     def get_unassigned_alerts(self, hours: int = 24) -> pd.DataFrame:
-        """Get all alerts without team assignment"""
+        """Get all alerts without team assignment (status='new')"""
         since = datetime.now() - timedelta(hours=hours)
         return self._query_to_df('''
             SELECT *
             FROM alerts
-            WHERE team_id IS NULL AND created_at > %s
+            WHERE status = 'new' AND created_at > %s
             ORDER BY created_at DESC
         ''', (since,))
+    
+    def get_alert_counts_by_status(self, hours: int = 24) -> Dict:
+        """Get count of alerts by status"""
+        since = datetime.now() - timedelta(hours=hours)
+        
+        new_count_df = self._query_to_df(
+            "SELECT COUNT(*) as count FROM alerts WHERE status = 'new' AND created_at > %s",
+            (since,)
+        )
+        assigned_count_df = self._query_to_df(
+            "SELECT COUNT(*) as count FROM alerts WHERE status = 'assigned' AND created_at > %s",
+            (since,)
+        )
+        resolved_count_df = self._query_to_df(
+            "SELECT COUNT(*) as count FROM alerts WHERE status = 'resolved' AND created_at > %s",
+            (since,)
+        )
+        
+        return {
+            'new': new_count_df.iloc[0]['count'] if not new_count_df.empty else 0,
+            'assigned': assigned_count_df.iloc[0]['count'] if not assigned_count_df.empty else 0,
+            'resolved': resolved_count_df.iloc[0]['count'] if not resolved_count_df.empty else 0
+        }
+    
+    def get_alerts_with_team_info(self, status: Optional[str] = None, hours: int = 24) -> pd.DataFrame:
+        """Get alerts with team information joined"""
+        since = datetime.now() - timedelta(hours=hours)
+        query = '''
+            SELECT 
+                a.*,
+                t.name as team_name,
+                u.name as resolved_by_name
+            FROM alerts a
+            LEFT JOIN teams t ON a.team_id = t.id
+            LEFT JOIN users u ON a.resolved_by = u.user_id
+            WHERE a.created_at > %s
+        '''
+        params = [since]
+        
+        if status:
+            query += " AND a.status = %s"
+            params.append(status)
+        
+        query += " ORDER BY a.created_at DESC"
+        
+        return self._query_to_df(query, tuple(params))
     
     def get_team_workload(self) -> pd.DataFrame:
         """Get workload statistics for all teams"""
@@ -799,6 +911,324 @@ class MySQLDatabaseManager:
             GROUP BY t.id, t.name
             ORDER BY active_alerts DESC, t.name
         ''')
+    
+    def get_alerts_for_user_teams(self, user_id: str, status: Optional[str] = None, hours: int = 24) -> pd.DataFrame:
+        """
+        Get all alerts assigned to teams that the user belongs to
+        Used for Field Technicians to view their team's alerts
+        """
+        since = datetime.now() - timedelta(hours=hours)
+        query = '''
+            SELECT DISTINCT
+                a.*,
+                t.name as team_name,
+                u.name as resolved_by_name
+            FROM alerts a
+            JOIN teams t ON a.team_id = t.id
+            JOIN team_members tm ON t.id = tm.team_id
+            LEFT JOIN users u ON a.resolved_by = u.user_id
+            WHERE tm.user_id = %s 
+            AND a.created_at > %s
+        '''
+        params = [user_id, since]
+        
+        if status:
+            query += " AND a.status = %s"
+            params.append(status)
+        
+        query += " ORDER BY a.created_at DESC"
+        
+        return self._query_to_df(query, tuple(params))
+    
+    # === USER MANAGEMENT OPERATIONS ===
+    
+    def get_all_users(self) -> pd.DataFrame:
+        """Get all users with their details"""
+        return self._query_to_df('''
+            SELECT user_id, username, email, name, role, status, last_login, created_at
+            FROM users
+            ORDER BY created_at DESC
+        ''')
+    
+    def update_user(self, user_id: str, email: str, name: str, role: str, status: str) -> tuple[bool, str]:
+        """
+        Update user details
+        Returns: (success, message)
+        """
+        # Verify user exists
+        user = self.get_user(user_id)
+        if not user:
+            return False, "User not found"
+        
+        # Check if new email conflicts with another user
+        if email != user['email']:
+            existing = self._query_to_df(
+                "SELECT user_id FROM users WHERE email = %s AND user_id != %s",
+                (email, user_id)
+            )
+            if not existing.empty:
+                return False, "Email already in use by another user"
+        
+        try:
+            self._execute(
+                "UPDATE users SET email = %s, name = %s, role = %s, status = %s WHERE user_id = %s",
+                (email, name, role, status, user_id)
+            )
+            return True, f"User '{name}' updated successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def update_user_role(self, user_id: str, new_role: str, updated_by: str) -> tuple[bool, str]:
+        """
+        Update user role (for role assignment)
+        Returns: (success, message)
+        """
+        # Verify user exists
+        user = self.get_user(user_id)
+        if not user:
+            return False, "User not found"
+        
+        # Validate role
+        from backend.rbac import Roles
+        if new_role not in Roles.ALL_ROLES:
+            return False, f"Invalid role: {new_role}"
+        
+        try:
+            self._execute(
+                "UPDATE users SET role = %s WHERE user_id = %s",
+                (new_role, user_id)
+            )
+            return True, f"User role updated to '{new_role}'"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def delete_user(self, user_id: str) -> tuple[bool, str]:
+        """
+        Delete a user (soft delete by setting status to inactive)
+        Returns: (success, message)
+        """
+        # Verify user exists
+        user = self.get_user(user_id)
+        if not user:
+            return False, "User not found"
+        
+        # Check if user has active team memberships
+        team_memberships = self._query_to_df(
+            "SELECT COUNT(*) as count FROM team_members WHERE user_id = %s",
+            (user_id,)
+        )
+        if not team_memberships.empty and team_memberships.iloc[0]['count'] > 0:
+            return False, "Cannot delete user with active team memberships. Remove from teams first."
+        
+        # Check if user has created teams
+        created_teams = self._query_to_df(
+            "SELECT COUNT(*) as count FROM teams WHERE created_by = %s AND status = 'active'",
+            (user_id,)
+        )
+        if not created_teams.empty and created_teams.iloc[0]['count'] > 0:
+            return False, "Cannot delete user who has created active teams"
+        
+        try:
+            # Soft delete - set status to inactive
+            self._execute(
+                "UPDATE users SET status = 'inactive' WHERE user_id = %s",
+                (user_id,)
+            )
+            return True, f"User '{user['name']}' deleted successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def create_user(self, user_id: str, username: str, email: str, name: str, role: str, password_hash: str) -> tuple[bool, str]:
+        """
+        Create a new user
+        Returns: (success, message)
+        """
+        # Validate role
+        from backend.rbac import Roles
+        if role not in Roles.ALL_ROLES:
+            return False, f"Invalid role: {role}"
+        
+        # Check if user_id already exists
+        existing_id = self.get_user(user_id)
+        if existing_id:
+            return False, f"User ID '{user_id}' already exists"
+        
+        # Check if email already exists
+        existing_email = self._query_to_df(
+            "SELECT user_id FROM users WHERE email = %s",
+            (email,)
+        )
+        if not existing_email.empty:
+            return False, f"Email '{email}' already in use"
+        
+        try:
+            self._execute(
+                "INSERT INTO users (user_id, username, email, name, role, password_hash) VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id.upper(), username, email, name, role, password_hash)
+            )
+            return True, f"User '{name}' created successfully"
+            
+        except mysql.connector.IntegrityError as e:
+            return False, f"Database error: {str(e)}"
+    
+    # === METER MANAGEMENT OPERATIONS ===
+    
+    def update_meter(self, meter_id: str, zone_id: str, location: str, meter_type: str,
+                    status: str, flow_rate: float, description: str) -> tuple[bool, str]:
+        """
+        Update meter details
+        Returns: (success, message)
+        """
+        # Verify meter exists
+        meter_df = self._query_to_df("SELECT * FROM meters WHERE meter_id = %s", (meter_id,))
+        if meter_df.empty:
+            return False, "Meter not found"
+        
+        # Verify zone exists
+        zone_df = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if zone_df.empty:
+            return False, f"Zone '{zone_id}' does not exist. Please create the zone first."
+        
+        try:
+            self._execute(
+                "UPDATE meters SET zone_id = %s, location = %s, meter_type = %s, status = %s, flow_rate = %s, description = %s WHERE meter_id = %s",
+                (zone_id, location, meter_type, status, flow_rate, description, meter_id)
+            )
+            return True, f"Meter '{meter_id}' updated successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def delete_meter(self, meter_id: str) -> tuple[bool, str]:
+        """
+        Delete a meter (soft delete by setting status to inactive)
+        Returns: (success, message)
+        """
+        # Verify meter exists
+        meter_df = self._query_to_df("SELECT * FROM meters WHERE meter_id = %s", (meter_id,))
+        if meter_df.empty:
+            return False, "Meter not found"
+        
+        # Check if meter has active alerts
+        active_alerts = self._query_to_df(
+            "SELECT COUNT(*) as count FROM alerts WHERE meter_id = %s AND status != 'resolved'",
+            (meter_id,)
+        )
+        if not active_alerts.empty and active_alerts.iloc[0]['count'] > 0:
+            return False, "Cannot delete meter with active alerts. Resolve alerts first."
+        
+        try:
+            # Soft delete - set status to inactive
+            self._execute(
+                "UPDATE meters SET status = 'inactive' WHERE meter_id = %s",
+                (meter_id,)
+            )
+            return True, f"Meter '{meter_id}' deleted successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def create_meter(self, meter_id: str, zone_id: str, location: str, meter_type: str,
+                    status: str, flow_rate: float, description: str) -> tuple[bool, str]:
+        """
+        Create a new meter (with zone validation)
+        Returns: (success, message)
+        """
+        # Verify zone exists
+        zone_df = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if zone_df.empty:
+            return False, f"Zone '{zone_id}' does not exist. Please create the zone first."
+        
+        # Check if meter_id already exists
+        existing = self._query_to_df("SELECT * FROM meters WHERE meter_id = %s", (meter_id,))
+        if not existing.empty:
+            return False, f"Meter ID '{meter_id}' already exists"
+        
+        try:
+            self._execute(
+                "INSERT INTO meters (meter_id, zone_id, location, meter_type, status, flow_rate, description) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (meter_id.upper(), zone_id, location, meter_type, status, flow_rate, description)
+            )
+            return True, f"Meter '{meter_id}' created successfully"
+            
+        except mysql.connector.IntegrityError as e:
+            return False, f"Database error: {str(e)}"
+    
+    # === ZONE MANAGEMENT OPERATIONS ===
+    
+    def update_zone(self, zone_id: str, name: str, region: str, zone_type: str,
+                   status: str, estimated_connections: int, description: str) -> tuple[bool, str]:
+        """
+        Update zone details
+        Returns: (success, message)
+        """
+        # Verify zone exists
+        zone_df = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if zone_df.empty:
+            return False, "Zone not found"
+        
+        try:
+            self._execute(
+                "UPDATE zones SET name = %s, region = %s, type = %s, status = %s, estimated_connections = %s, description = %s WHERE zone_id = %s",
+                (name, region, zone_type, status, estimated_connections, description, zone_id)
+            )
+            return True, f"Zone '{name}' updated successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def delete_zone(self, zone_id: str) -> tuple[bool, str]:
+        """
+        Delete a zone (soft delete by setting status to inactive)
+        Returns: (success, message)
+        """
+        # Verify zone exists
+        zone_df = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if zone_df.empty:
+            return False, "Zone not found"
+        
+        # Check if zone has active meters
+        active_meters = self._query_to_df(
+            "SELECT COUNT(*) as count FROM meters WHERE zone_id = %s AND status = 'active'",
+            (zone_id,)
+        )
+        if not active_meters.empty and active_meters.iloc[0]['count'] > 0:
+            return False, "Cannot delete zone with active meters. Delete or reassign meters first."
+        
+        try:
+            # Soft delete - set status to inactive
+            self._execute(
+                "UPDATE zones SET status = 'inactive' WHERE zone_id = %s",
+                (zone_id,)
+            )
+            return True, f"Zone '{zone_df.iloc[0]['name']}' deleted successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def create_zone(self, zone_id: str, name: str, region: str, zone_type: str,
+                   status: str, estimated_connections: int, description: str) -> tuple[bool, str]:
+        """
+        Create a new zone
+        Returns: (success, message)
+        """
+        # Check if zone_id already exists
+        existing = self._query_to_df("SELECT * FROM zones WHERE zone_id = %s", (zone_id,))
+        if not existing.empty:
+            return False, f"Zone ID '{zone_id}' already exists"
+        
+        try:
+            self._execute(
+                "INSERT INTO zones (zone_id, name, region, type, status, estimated_connections, description) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (zone_id.upper(), name, region, zone_type, status, estimated_connections, description)
+            )
+            return True, f"Zone '{name}' created successfully"
+            
+        except mysql.connector.IntegrityError as e:
+            return False, f"Database error: {str(e)}"
     
     # === SEED DATA ===
     
