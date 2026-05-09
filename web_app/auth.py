@@ -8,7 +8,7 @@ import bcrypt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 
 
 # ─────────────────────────────────────────────

@@ -251,7 +251,7 @@ class LeakDetectionModel:
 
     def predict_for_meter(self, meter_id: str) -> Dict:
         """Get prediction for a specific meter using recent readings."""
-        from backend.database_manager import db_manager
+        from backend.mysql_database_manager import db_manager
         from backend.smart_meter_simulator import smart_meter_simulator
 
         try:

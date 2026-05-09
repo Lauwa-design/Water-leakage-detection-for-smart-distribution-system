@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 from page_components.ui import empty_state, metric_card, page_header, section_header
 
 

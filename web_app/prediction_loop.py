@@ -8,7 +8,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 from backend.smart_meter_simulator import smart_meter_simulator
 from backend.realtime_feature_extractor import realtime_feature_extractor
 from backend.ml_integration import ml_model

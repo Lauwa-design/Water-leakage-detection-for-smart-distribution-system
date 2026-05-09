@@ -2,7 +2,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 
 
 class RealtimeFeatureExtractor:

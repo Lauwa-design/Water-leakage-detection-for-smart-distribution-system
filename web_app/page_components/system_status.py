@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 from backend.ml_integration import MODEL_DIR, ml_model
 from page_components.data_utils import (
     format_datetime,

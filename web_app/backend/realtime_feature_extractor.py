@@ -9,7 +9,7 @@ class RealtimeFeatureExtractor:
 
     def extract_features(self, meter_id: str) -> Dict[str, float]:
         """Extract 7 hydraulic features for leak prediction."""
-        from backend.database_manager import db_manager
+        from backend.mysql_database_manager import db_manager
 
         readings = db_manager.get_sensor_readings(meter_id=meter_id, hours=24)
         if readings.empty or len(readings) < 3:

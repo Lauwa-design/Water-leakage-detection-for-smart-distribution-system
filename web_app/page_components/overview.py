@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from backend.database_manager import db_manager
+from backend.mysql_database_manager import db_manager
 from page_components.data_utils import (
     build_meter_snapshot,
     format_datetime,

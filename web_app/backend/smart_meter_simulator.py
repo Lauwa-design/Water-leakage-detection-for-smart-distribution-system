@@ -133,7 +133,7 @@ class SmartMeterSimulator:
                     
                     # Store in database
                     try:
-                        from backend.database_manager import db_manager
+                        from backend.mysql_database_manager import db_manager
                         db_manager.add_sensor_reading(
                             meter_id=reading['meter_id'],
                             pressure=reading['pressure'],
@@ -222,7 +222,7 @@ class SmartMeterSimulator:
 
 def setup_sample_meters():
     """Setup sample meters from database"""
-    from backend.database_manager import db_manager
+    from backend.mysql_database_manager import db_manager
 
     # Get all meters from database
     meters_df = db_manager.get_all_meters()

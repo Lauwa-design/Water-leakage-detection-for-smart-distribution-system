@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from backend.database_manager import db_manager, seed_demo_data
+from backend.mysql_database_manager import db_manager, seed_demo_data
 from backend.ml_integration import ml_model
 from backend.smart_meter_simulator import setup_sample_meters, smart_meter_simulator
 from prediction_loop import prediction_loop, start_prediction_loop
@@ -137,7 +137,7 @@ def build_meter_snapshot(
     available_zone_columns = [column for column in zone_columns if column in zones_df.columns]
     if available_zone_columns:
         zone_lookup = zones_df[available_zone_columns].rename(
-            columns={"name": "zone_name", "type": "zone_type", "status": "zone_status"}
+            columns=dict({"name": "zone_name", "type": "zone_type", "status": "zone_status"})
         )
         snapshot = snapshot.merge(zone_lookup, on="zone_id", how="left")
 
@@ -145,7 +145,7 @@ def build_meter_snapshot(
         readings = readings_df.sort_values("timestamp")
         latest_readings = readings.groupby("meter_id", as_index=False).tail(1)
         latest_readings = latest_readings.rename(
-            columns={"flow_rate": "current_flow", "pressure": "current_pressure", "timestamp": "last_seen"}
+            columns=dict({"flow_rate": "current_flow", "pressure": "current_pressure", "timestamp": "last_seen"})
         )[["meter_id", "current_flow", "current_pressure", "temperature", "last_seen"]]
 
         reading_summary = readings.groupby("meter_id").agg(
@@ -169,7 +169,7 @@ def build_meter_snapshot(
     if not predictions_df.empty:
         predictions = predictions_df.sort_values("timestamp")
         latest_predictions = predictions.groupby("meter_id", as_index=False).tail(1).rename(
-            columns={"timestamp": "prediction_time"}
+            columns=dict({"timestamp": "prediction_time"})
         )
         latest_predictions = latest_predictions[
             ["meter_id", "confidence", "leak_detected", "leak_type", "prediction_time"]
@@ -181,12 +181,12 @@ def build_meter_snapshot(
         if not open_alerts.empty:
             latest_alerts = open_alerts.sort_values("created_at").groupby("meter_id", as_index=False).tail(1)
             latest_alerts = latest_alerts.rename(
-                columns={
+                columns=dict({
                     "severity": "alert_severity",
                     "status": "alert_status",
                     "title": "alert_title",
                     "created_at": "alert_created_at",
-                }
+                })
             )
             snapshot = snapshot.merge(
                 latest_alerts[["meter_id", "alert_severity", "alert_status", "alert_title", "alert_created_at"]],
