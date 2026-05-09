@@ -157,6 +157,53 @@ class MySQLDatabaseManager:
             )
         ''')
         
+        # Teams table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS teams (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                description TEXT,
+                created_by VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                status VARCHAR(20) DEFAULT 'active',
+                FOREIGN KEY (created_by) REFERENCES users(user_id)
+            )
+        ''')
+        
+        # Team members junction table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS team_members (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                team_id INT NOT NULL,
+                user_id VARCHAR(50) NOT NULL,
+                added_by VARCHAR(50) NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (added_by) REFERENCES users(user_id),
+                UNIQUE KEY unique_team_member (team_id, user_id)
+            )
+        ''')
+        
+        # Add team_id to alerts table if it doesn't exist
+        # Check if column exists first
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+            AND TABLE_NAME = 'alerts'
+            AND COLUMN_NAME = 'team_id'
+        """, (self.config['database'],))
+        
+        result = cursor.fetchone()
+        if result[0] == 0:
+            cursor.execute('''
+                ALTER TABLE alerts 
+                ADD COLUMN team_id INT,
+                ADD FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE SET NULL
+            ''')
+        
         conn.commit()
         cursor.close()
     
@@ -238,6 +285,19 @@ class MySQLDatabaseManager:
         self._execute(
             "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = %s",
             (user_id,)
+        )
+    
+    def get_field_technicians(self) -> pd.DataFrame:
+        """Get all users with Field Technician role"""
+        return self._query_to_df(
+            "SELECT user_id, name, email, status FROM users WHERE role = 'Field Technician' AND status = 'active'"
+        )
+    
+    def get_users_by_role(self, role: str) -> pd.DataFrame:
+        """Get all users with a specific role"""
+        return self._query_to_df(
+            "SELECT user_id, name, email, role, status FROM users WHERE role = %s AND status = 'active'",
+            (role,)
         )
     
     # === WRITE OPERATIONS ===
@@ -435,6 +495,310 @@ class MySQLDatabaseManager:
             WHERE created_at > %s
             ORDER BY created_at DESC
         ''', (since,))
+    
+    # === TEAM MANAGEMENT OPERATIONS ===
+    
+    def validate_team_members(self, member_ids: List[str]) -> tuple[bool, str]:
+        """Validate that all member IDs are Field Technicians and active"""
+        if not member_ids:
+            return False, "Team must have at least one member"
+        
+        # Check team size constraints
+        if len(member_ids) < 2:
+            return False, "Team must have at least 2 members"
+        if len(member_ids) > 6:
+            return False, "Team cannot have more than 6 members"
+        
+        # Check for duplicates
+        if len(member_ids) != len(set(member_ids)):
+            return False, "Duplicate members are not allowed"
+        
+        # Verify all members exist and are Field Technicians
+        placeholders = ','.join(['%s'] * len(member_ids))
+        query = f"""
+            SELECT user_id, role, status 
+            FROM users 
+            WHERE user_id IN ({placeholders})
+        """
+        df = self._query_to_df(query, tuple(member_ids))
+        
+        if df.empty or len(df) != len(member_ids):
+            return False, "One or more user IDs are invalid"
+        
+        # Check all are Field Technicians
+        non_technicians = df[df['role'] != 'Field Technician']
+        if not non_technicians.empty:
+            return False, "All team members must be Field Technicians"
+        
+        # Check all are active
+        inactive = df[df['status'] != 'active']
+        if not inactive.empty:
+            return False, "All team members must have active status"
+        
+        return True, "Valid"
+    
+    def create_team(self, name: str, description: str, created_by: str, member_ids: List[str]) -> tuple[bool, str, Optional[int]]:
+        """
+        Create a new team with members
+        Returns: (success, message, team_id)
+        """
+        # Validate members
+        valid, msg = self.validate_team_members(member_ids)
+        if not valid:
+            return False, msg, None
+        
+        # Check if team name already exists
+        existing = self._query_to_df("SELECT id FROM teams WHERE name = %s", (name,))
+        if not existing.empty:
+            return False, "Team name already exists", None
+        
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            # Insert team
+            cursor.execute(
+                "INSERT INTO teams (name, description, created_by) VALUES (%s, %s, %s)",
+                (name, description, created_by)
+            )
+            team_id = cursor.lastrowid
+            
+            # Insert team members
+            for member_id in member_ids:
+                cursor.execute(
+                    "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
+                    (team_id, member_id, created_by)
+                )
+            
+            conn.commit()
+            cursor.close()
+            
+            return True, f"Team '{name}' created successfully", team_id
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}", None
+    
+    def get_team(self, team_id: int) -> Optional[Dict]:
+        """Get team details with members"""
+        team_df = self._query_to_df(
+            "SELECT * FROM teams WHERE id = %s",
+            (team_id,)
+        )
+        
+        if team_df.empty:
+            return None
+        
+        team = team_df.iloc[0].to_dict()
+        
+        # Get team members
+        members_df = self._query_to_df('''
+            SELECT u.user_id, u.name, u.email, tm.added_at
+            FROM team_members tm
+            JOIN users u ON tm.user_id = u.user_id
+            WHERE tm.team_id = %s
+            ORDER BY u.name
+        ''', (team_id,))
+        
+        team['members'] = members_df.to_dict('records') if not members_df.empty else []
+        team['member_count'] = len(team['members'])
+        
+        return team
+    
+    def get_all_teams(self) -> pd.DataFrame:
+        """Get all teams with member counts"""
+        return self._query_to_df('''
+            SELECT 
+                t.id,
+                t.name,
+                t.description,
+                t.status,
+                t.created_by,
+                t.created_at,
+                t.updated_at,
+                COUNT(tm.user_id) as member_count
+            FROM teams t
+            LEFT JOIN team_members tm ON t.id = tm.team_id
+            GROUP BY t.id, t.name, t.description, t.status, t.created_by, t.created_at, t.updated_at
+            ORDER BY t.created_at DESC
+        ''')
+    
+    def get_teams_by_user(self, user_id: str) -> pd.DataFrame:
+        """Get all teams a user belongs to"""
+        return self._query_to_df('''
+            SELECT 
+                t.id,
+                t.name,
+                t.description,
+                t.status,
+                t.created_at,
+                COUNT(tm2.user_id) as member_count
+            FROM teams t
+            JOIN team_members tm ON t.id = tm.team_id
+            LEFT JOIN team_members tm2 ON t.id = tm2.team_id
+            WHERE tm.user_id = %s AND t.status = 'active'
+            GROUP BY t.id, t.name, t.description, t.status, t.created_at
+            ORDER BY t.name
+        ''', (user_id,))
+    
+    def update_team(self, team_id: int, name: str, description: str, member_ids: List[str], updated_by: str) -> tuple[bool, str]:
+        """
+        Update team details and members
+        Returns: (success, message)
+        """
+        # Validate members
+        valid, msg = self.validate_team_members(member_ids)
+        if not valid:
+            return False, msg
+        
+        # Check if team exists
+        team = self.get_team(team_id)
+        if not team:
+            return False, "Team not found"
+        
+        # Check if new name conflicts with another team
+        if name != team['name']:
+            existing = self._query_to_df(
+                "SELECT id FROM teams WHERE name = %s AND id != %s",
+                (name, team_id)
+            )
+            if not existing.empty:
+                return False, "Team name already exists"
+        
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            # Update team details
+            cursor.execute(
+                "UPDATE teams SET name = %s, description = %s WHERE id = %s",
+                (name, description, team_id)
+            )
+            
+            # Remove all existing members
+            cursor.execute("DELETE FROM team_members WHERE team_id = %s", (team_id,))
+            
+            # Add new members
+            for member_id in member_ids:
+                cursor.execute(
+                    "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
+                    (team_id, member_id, updated_by)
+                )
+            
+            conn.commit()
+            cursor.close()
+            
+            return True, f"Team '{name}' updated successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def delete_team(self, team_id: int, deleted_by: str) -> tuple[bool, str]:
+        """
+        Delete a team (soft delete by setting status to inactive)
+        Returns: (success, message)
+        """
+        # Check if team exists
+        team = self.get_team(team_id)
+        if not team:
+            return False, "Team not found"
+        
+        try:
+            # Soft delete - set status to inactive
+            self._execute(
+                "UPDATE teams SET status = 'inactive' WHERE id = %s",
+                (team_id,)
+            )
+            
+            # Unassign all alerts from this team
+            self._execute(
+                "UPDATE alerts SET team_id = NULL WHERE team_id = %s",
+                (team_id,)
+            )
+            
+            return True, f"Team '{team['name']}' deleted successfully"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def assign_alert_to_team(self, alert_id: int, team_id: int, assigned_by: str) -> tuple[bool, str]:
+        """
+        Assign an alert to a team
+        Returns: (success, message)
+        """
+        # Verify alert exists
+        alert_df = self._query_to_df("SELECT id FROM alerts WHERE id = %s", (alert_id,))
+        if alert_df.empty:
+            return False, "Alert not found"
+        
+        # Verify team exists and is active
+        team = self.get_team(team_id)
+        if not team:
+            return False, "Team not found"
+        if team['status'] != 'active':
+            return False, "Team is not active"
+        
+        try:
+            self._execute(
+                "UPDATE alerts SET team_id = %s WHERE id = %s",
+                (team_id, alert_id)
+            )
+            return True, f"Alert assigned to team '{team['name']}'"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def unassign_alert_from_team(self, alert_id: int) -> tuple[bool, str]:
+        """
+        Remove team assignment from an alert
+        Returns: (success, message)
+        """
+        try:
+            self._execute(
+                "UPDATE alerts SET team_id = NULL WHERE id = %s",
+                (alert_id,)
+            )
+            return True, "Alert unassigned from team"
+            
+        except mysql.connector.Error as e:
+            return False, f"Database error: {str(e)}"
+    
+    def get_alerts_by_team(self, team_id: int, hours: int = 24) -> pd.DataFrame:
+        """Get all alerts assigned to a specific team"""
+        since = datetime.now() - timedelta(hours=hours)
+        return self._query_to_df('''
+            SELECT a.*, t.name as team_name
+            FROM alerts a
+            JOIN teams t ON a.team_id = t.id
+            WHERE a.team_id = %s AND a.created_at > %s
+            ORDER BY a.created_at DESC
+        ''', (team_id, since))
+    
+    def get_unassigned_alerts(self, hours: int = 24) -> pd.DataFrame:
+        """Get all alerts without team assignment"""
+        since = datetime.now() - timedelta(hours=hours)
+        return self._query_to_df('''
+            SELECT *
+            FROM alerts
+            WHERE team_id IS NULL AND created_at > %s
+            ORDER BY created_at DESC
+        ''', (since,))
+    
+    def get_team_workload(self) -> pd.DataFrame:
+        """Get workload statistics for all teams"""
+        return self._query_to_df('''
+            SELECT 
+                t.id,
+                t.name,
+                COUNT(DISTINCT tm.user_id) as member_count,
+                COUNT(DISTINCT CASE WHEN a.status != 'resolved' THEN a.id END) as active_alerts,
+                COUNT(DISTINCT CASE WHEN a.status = 'resolved' THEN a.id END) as resolved_alerts
+            FROM teams t
+            LEFT JOIN team_members tm ON t.id = tm.team_id
+            LEFT JOIN alerts a ON t.id = a.team_id
+            WHERE t.status = 'active'
+            GROUP BY t.id, t.name
+            ORDER BY active_alerts DESC, t.name
+        ''')
     
     # === SEED DATA ===
     
@@ -717,6 +1081,59 @@ class MySQLDatabaseManager:
                 self.add_meter(*meter)
             except mysql.connector.IntegrityError:
                 pass
+    
+    def seed_default_teams(self):
+        """Seed default teams with Field Technicians"""
+        print("Seeding default teams...")
+        
+        # Get Field Technicians
+        technicians = self.get_field_technicians()
+        if technicians.empty or len(technicians) < 2:
+            print("  - Not enough Field Technicians to create teams (need at least 2)")
+            return
+        
+        tech_ids = technicians['user_id'].tolist()
+        
+        # Create default teams
+        default_teams = [
+            {
+                "name": "Thika Central Response Team",
+                "description": "Primary response team for Thika Central zones (CBD, Market, Railway)",
+                "members": tech_ids[:min(2, len(tech_ids))]  # First 2 technicians
+            },
+            {
+                "name": "Thika West Response Team",
+                "description": "Response team covering Thika West residential and commercial zones",
+                "members": tech_ids[:min(3, len(tech_ids))]  # First 3 technicians if available
+            }
+        ]
+        
+        created_count = 0
+        for team_data in default_teams:
+            # Check if team already exists
+            existing = self._query_to_df("SELECT id FROM teams WHERE name = %s", (team_data["name"],))
+            if not existing.empty:
+                print(f"  - Team already exists: {team_data['name']}")
+                continue
+            
+            # Create team (using THW-001 as creator - Non-Revenue Water Officer)
+            success, msg, team_id = self.create_team(
+                name=team_data["name"],
+                description=team_data["description"],
+                created_by="THW-001",
+                member_ids=team_data["members"]
+            )
+            
+            if success:
+                created_count += 1
+                print(f"  - Created team: {team_data['name']} (ID: {team_id})")
+            else:
+                print(f"  - Failed to create team {team_data['name']}: {msg}")
+        
+        if created_count > 0:
+            print(f"  - Created {created_count} new teams")
+        else:
+            print("  - All default teams already exist")
 
 
 # Global instance - configure with your MySQL credentials
@@ -728,4 +1145,5 @@ def seed_demo_data():
     db_manager.seed_default_users()
     db_manager.seed_default_zones()
     db_manager.seed_default_meters()
+    db_manager.seed_default_teams()
     print("MySQL demo data seeded!")

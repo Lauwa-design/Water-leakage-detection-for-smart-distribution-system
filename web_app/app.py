@@ -14,6 +14,7 @@ from page_components import (
     show_overview,
     show_system_status,
     show_zones_assets,
+    show_teams,
 )
 from page_components.data_utils import bootstrap_demo_environment
 from page_components.ui import apply_theme
@@ -44,7 +45,7 @@ bootstrap_demo_environment()
 st.sidebar.title("THIWASCO")
 page = st.sidebar.radio(
     "Navigation",
-    ["Overview", "Leak Analysis", "Alerts", "Zones & Assets", "System Status"],
+    ["Overview", "Leak Analysis", "Alerts", "Teams", "Zones & Assets", "System Status"],
 )
 
 st.sidebar.markdown("---")
@@ -62,6 +63,8 @@ try:
         show_leak_analysis()
     elif page == "Alerts":
         show_alerts()
+    elif page == "Teams":
+        show_teams()
     elif page == "Zones & Assets":
         show_zones_assets()
     elif page == "System Status":
