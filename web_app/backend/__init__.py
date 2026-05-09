@@ -1,33 +1,16 @@
-"""
-THIWASCO Leak Detection Backend
-Clean separation of concerns - no UI logic
-"""
+"""Backend module for THIWASCO leak detection system."""
 
-from .leak_detector import LeakDetector, predict_leak, batch_predict, LeakPrediction, LeakSeverity
+from backend.mysql_database_manager import MySQLDatabaseManager
 
-# Import MySQL data manager by default
-try:
-    from .data_manager_mysql import data_manager
-    print("Using MySQL database")
-except ImportError as e:
-    print(f"MySQL not available, falling back to SQLite: {e}")
-    from .data_manager import data_manager
-
-from .prediction_service import PredictionService, prediction_service
-from .realtime_simulator import RealTimeSimulator, realtime_simulator
-from .alert_manager import AlertManager, alert_manager
+# Create a global instance using MySQL
+db_manager = MySQLDatabaseManager()
+from .smart_meter_simulator import smart_meter_simulator, SmartMeterSimulator, LeakType, setup_sample_meters
+from .realtime_feature_extractor import realtime_feature_extractor, RealtimeFeatureExtractor
+from .ml_integration import ml_model, LeakDetectionModel
 
 __all__ = [
-    'LeakDetector',
-    'predict_leak', 
-    'batch_predict',
-    'LeakPrediction',
-    'LeakSeverity',
-    'data_manager',
-    'PredictionService',
-    'prediction_service',
-    'RealTimeSimulator',
-    'realtime_simulator',
-    'AlertManager',
-    'alert_manager'
+    'db_manager', 'MySQLDatabaseManager',
+    'smart_meter_simulator', 'SmartMeterSimulator', 'LeakType', 'setup_sample_meters',
+    'realtime_feature_extractor', 'RealtimeFeatureExtractor',
+    'ml_model', 'LeakDetectionModel',
 ]
