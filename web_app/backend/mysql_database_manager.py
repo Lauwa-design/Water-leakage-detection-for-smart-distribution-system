@@ -446,10 +446,10 @@ class MySQLDatabaseManager:
         password_hash = bcrypt.hashpw(default_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         
         default_users = [
-            ("THW-001", "thiwasco", "j.kamau@thiwasco.co.ke", "John Kamau", "Operator", password_hash),
-            ("THW-002", "thiwasco", "g.ochieng@thiwasco.co.ke", "Grace Ochieng", "Manager", password_hash),
-            ("THW-003", "thiwasco", "p.mwangi@thiwasco.co.ke", "Peter Mwangi", "Engineer", password_hash),
-            ("THW-004", "thiwasco", "a.wanjiku@thiwasco.co.ke", "Alice Wanjiku", "Technician", password_hash),
+            ("THW-001", "thiwasco", "j.kamau@thiwasco.co.ke", "John Kamau", "Non-Revenue Water Officer", password_hash),
+            ("THW-002", "thiwasco", "g.ochieng@thiwasco.co.ke", "Grace Ochieng", "Field Technician", password_hash),
+            ("THW-003", "thiwasco", "p.mwangi@thiwasco.co.ke", "Peter Mwangi", "System Administrator", password_hash),
+            ("THW-004", "thiwasco", "a.wanjiku@thiwasco.co.ke", "Alice Wanjiku", "Field Technician", password_hash),
         ]
         
         created_count = 0
