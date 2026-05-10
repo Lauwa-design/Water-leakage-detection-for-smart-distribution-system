@@ -1,5 +1,14 @@
 {
-  "features": [
+  "binary_features": [
+    "mnf",
+    "night_flow_ratio",
+    "flow_variance",
+    "daily_variance",
+    "pressure_flow_correlation",
+    "pressure_drop_pattern",
+    "flow_trend"
+  ],
+  "multiclass_features": [
     "mnf",
     "night_flow_ratio",
     "flow_variance",
@@ -7,14 +16,16 @@
     "pressure_flow_correlation",
     "pressure_drop_pattern",
     "flow_trend",
-    "peak_hour_flow",
-    "off_peak_flow",
-    "flow_consistency_score",
-    "pressure_variance",
-    "pressure_trend",
-    "pressure_stability",
-    "flow_pressure_ratio",
-    "anomaly_score",
-    "leak_signature_strength"
-  ]
+    "flow_p95",
+    "flow_p99",
+    "above_baseline_fraction",
+    "spike_sharpness",
+    "night_mnf_ratio",
+    "pressure_drop_abs",
+    "flow_cv",
+    "flow_max_step",
+    "pressure_cv",
+    "flow_late_vs_early_rel"
+  ],
+  "binary_probability_threshold": 0.49
 }

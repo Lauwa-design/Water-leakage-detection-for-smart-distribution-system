@@ -1,8 +1,31 @@
 {
-  "binary_validation_auc": 0.48943494776828106,
-  "binary_test_auc": 0.503307827195919,
-  "binary_test_accuracy": 0.5111111111111111,
-  "features": [
+  "binary_test_auc": 0.9900212704498307,
+  "binary_test_accuracy": 0.9622222222222222,
+  "binary_test_accuracy_tuned_threshold": 0.9622222222222222,
+  "binary_test_f1_default_threshold_0_5": 0.9745127436281859,
+  "binary_test_f1_tuned_threshold": 0.9745127436281859,
+  "binary_probability_threshold": 0.49,
+  "binary_cv_auc_mean": 0.9904836642199377,
+  "binary_cv_auc_std": 0.0034928238131811764,
+  "binary_cv_f1_mean": 0.9788284228425873,
+  "binary_cv_f1_std": 0.00355569465064409,
+  "binary_cv_fold_thresholds": [
+    0.36000000000000004,
+    0.49,
+    0.54,
+    0.55,
+    0.32
+  ],
+  "binary_features": [
+    "mnf",
+    "night_flow_ratio",
+    "flow_variance",
+    "daily_variance",
+    "pressure_flow_correlation",
+    "pressure_drop_pattern",
+    "flow_trend"
+  ],
+  "multiclass_features": [
     "mnf",
     "night_flow_ratio",
     "flow_variance",
@@ -10,16 +33,20 @@
     "pressure_flow_correlation",
     "pressure_drop_pattern",
     "flow_trend",
-    "peak_hour_flow",
-    "off_peak_flow",
-    "flow_consistency_score",
-    "pressure_variance",
-    "pressure_trend",
-    "pressure_stability",
-    "flow_pressure_ratio",
-    "anomaly_score",
-    "leak_signature_strength"
+    "flow_p95",
+    "flow_p99",
+    "above_baseline_fraction",
+    "spike_sharpness",
+    "night_mnf_ratio",
+    "pressure_drop_abs",
+    "flow_cv",
+    "flow_max_step",
+    "pressure_cv",
+    "flow_late_vs_early_rel"
   ],
+  "multiclass_cv_splits": 5,
+  "multiclass_cv_macro_f1_mean": 0.977640823344967,
+  "multiclass_cv_macro_f1_std": 0.005332579410020509,
   "multiclass_classes": [
     "extreme_leak",
     "moderate_leak",
@@ -27,35 +54,35 @@
   ],
   "multiclass_test_report": {
     "extreme_leak": {
-      "precision": 0.43103448275862066,
-      "recall": 0.5050505050505051,
-      "f1-score": 0.46511627906976744,
-      "support": 99.0
+      "precision": 0.9652173913043478,
+      "recall": 0.9823008849557522,
+      "f1-score": 0.9736842105263158,
+      "support": 113.0
     },
     "moderate_leak": {
-      "precision": 0.2777777777777778,
-      "recall": 0.2459016393442623,
-      "f1-score": 0.26086956521739135,
-      "support": 61.0
+      "precision": 0.9805825242718447,
+      "recall": 0.9619047619047619,
+      "f1-score": 0.9711538461538461,
+      "support": 105.0
     },
     "slow_leak": {
-      "precision": 0.3157894736842105,
-      "recall": 0.27906976744186046,
-      "f1-score": 0.29629629629629634,
-      "support": 86.0
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 119.0
     },
-    "accuracy": 0.3617886178861789,
+    "accuracy": 0.9821958456973294,
     "macro avg": {
-      "precision": 0.3415339114068696,
-      "recall": 0.3433406372788759,
-      "f1-score": 0.34076071352781834,
-      "support": 246.0
+      "precision": 0.9819333051920642,
+      "recall": 0.9814018822868381,
+      "f1-score": 0.9816126855600539,
+      "support": 337.0
     },
     "weighted avg": {
-      "precision": 0.35274289826987804,
-      "recall": 0.3617886178861789,
-      "f1-score": 0.355451368242477,
-      "support": 246.0
+      "precision": 0.9822870334300742,
+      "recall": 0.9821958456973294,
+      "f1-score": 0.9821883371977077,
+      "support": 337.0
     }
   }
 }

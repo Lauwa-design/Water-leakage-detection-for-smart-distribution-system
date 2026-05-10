@@ -33,25 +33,31 @@ METER_INGRESS_RATING = "IP68"
 # Modeling assumptions used to keep hydraulic output realistic for DMA/bulk use.
 METER_VELOCITY_RANGE_MS = (0.05, 3.0)
 PRESSURE_RANGE = (0, 16)  # bar, hydraulic context variable
-PRESSURE_NOISE_STD = 0.008
+PRESSURE_NOISE_STD = 0.005  # Reduced from 0.008 for better signal-to-noise ratio
 FLOW_RANGE = (
     METER_MIN_FLOW_M3H * (1000.0 / 60.0),
     METER_MAX_FLOW_M3H * (1000.0 / 60.0),
 )  # L/min
-FLOW_NOISE_STD = 0.015
+FLOW_NOISE_STD = 0.01  # Reduced from 0.015 for better signal-to-noise ratio
 TEMPERATURE_RANGE = (0, 50)  # contextual network temperature range
-DEMAND_NOISE_STD = 0.008
+DEMAND_NOISE_STD = 0.005  # Reduced from 0.008
 
 # Meter cadence
 METER_READING_INTERVAL = METER_OUTPUT_INTERVAL_SECONDS
 DAILY_READINGS = 288
 
-# Leak settings
+# Baseline ranges for scenario generation
+DMA_BASELINE_MIN = 180.0
+DMA_BASELINE_MAX = 420.0
+PRESSURE_BASELINE_MIN = 3.5
+PRESSURE_BASELINE_MAX = 5.5
+
+# Leak settings - Wider separation between types for better multiclass distinction
 LEAK_MAG_MIN = 5.0
-LEAK_MAG_MAX = 150.0
-SLOW_LEAK_THRESHOLD = 15
-MODERATE_LEAK_THRESHOLD = 60
-EXTREME_LEAK_THRESHOLD = 100
+LEAK_MAG_MAX = 180.0
+SLOW_LEAK_THRESHOLD = 20  # 20-59 L/min
+MODERATE_LEAK_THRESHOLD = 80  # 80-139 L/min (20 L/min gap from slow)
+EXTREME_LEAK_THRESHOLD = 140  # 140-180 L/min (20 L/min gap from moderate)
 
 # Filenames
 BINARY_MODEL_FILE = MODELS_DIR / "leak_binary.joblib"

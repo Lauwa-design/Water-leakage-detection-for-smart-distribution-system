@@ -29,7 +29,10 @@ class LeakDetectionModel:
     def __init__(self) -> None:
         self.binary_model = None
         self.multi_model = None
-        self.feature_list: list[str] | None = None
+        # Binary / multiclass column order must match training ``feature_list.json``.
+        self.binary_features: list[str] = DEFAULT_FEATURES.copy()
+        self.multiclass_features: list[str] = DEFAULT_FEATURES.copy()
+        self.feature_list: list[str] | None = None  # mirrors binary_features after load
         self.scaler = None
         self.leak_detection_threshold = 0.5
         self.binary_model_path = self._find_first_existing(
@@ -80,46 +83,63 @@ class LeakDetectionModel:
                 try:
                     with open(self.features_path, "r", encoding="utf-8") as handle:
                         feature_data = json.load(handle)
-                    self.feature_list = feature_data.get("features", DEFAULT_FEATURES)
-                    print(f"Feature list loaded with {len(self.feature_list)} features")
+                    legacy = feature_data.get("features")
+                    bf = feature_data.get("binary_features")
+                    mf = feature_data.get("multiclass_features")
+                    if bf:
+                        self.binary_features = list(bf)
+                    if mf:
+                        self.multiclass_features = list(mf)
+                    elif legacy:
+                        self.binary_features = list(legacy)
+                        self.multiclass_features = list(legacy)
+                    thr = feature_data.get("binary_probability_threshold")
+                    if thr is not None:
+                        self.leak_detection_threshold = float(thr)
+                    self.feature_list = self.binary_features
+                    print(
+                        f"Feature manifest: binary n={len(self.binary_features)}, "
+                        f"multiclass n={len(self.multiclass_features)}, "
+                        f"threshold={self.leak_detection_threshold:.4f}"
+                    )
                 except Exception as exc:
                     print(f"Warning: Could not load feature list: {exc}")
 
             if not self.feature_list:
-                self.feature_list = DEFAULT_FEATURES.copy()
+                self.feature_list = self.binary_features.copy()
         except Exception as exc:
             print(f"Error loading models: {exc}")
             self.binary_model = None
             self.multi_model = None
+            self.binary_features = DEFAULT_FEATURES.copy()
+            self.multiclass_features = DEFAULT_FEATURES.copy()
             self.feature_list = DEFAULT_FEATURES.copy()
 
     def predict(self, features: Dict[str, float]) -> Tuple[bool, float, str]:
         """
         Make leak prediction.
-        Returns: (leak_detected, confidence, leak_type)
+        Returns: (leak_detected, snce, leak_type)
         """
         if self.binary_model is None or self.feature_list is None:
             return False, 0.0, "None"
 
         try:
-            # Create DataFrame with proper feature names to avoid sklearn warnings
-            feature_values = [features.get(name, 0.0) for name in self.feature_list]
-            feature_df = pd.DataFrame([feature_values], columns=self.feature_list)
+            bin_vals = [float(features.get(name, 0.0)) for name in self.binary_features]
+            df_bin = pd.DataFrame([bin_vals], columns=self.binary_features)
 
             if self.scaler is not None:
                 try:
-                    feature_array = self.scaler.transform(feature_df)
-                    # Convert back to DataFrame with feature names
-                    feature_df = pd.DataFrame(feature_array, columns=self.feature_list)
+                    arr = self.scaler.transform(df_bin)
+                    df_bin = pd.DataFrame(arr, columns=self.binary_features)
                 except Exception as exc:
                     print(f"Warning: could not scale features: {exc}")
 
             try:
                 if hasattr(self.binary_model, "predict_proba"):
-                    probabilities = self.binary_model.predict_proba(feature_df)[0]
+                    probabilities = self.binary_model.predict_proba(df_bin)[0]
                     leak_prob = probabilities[1] if len(probabilities) > 1 else probabilities[0]
                 else:
-                    leak_prob = float(self.binary_model.predict(feature_df)[0])
+                    leak_prob = float(self.binary_model.predict(df_bin)[0])
             except AttributeError as exc:
                 if "monotonic_cst" in str(exc):
                     leak_prob = self._fallback_prediction(features)
@@ -131,8 +151,13 @@ class LeakDetectionModel:
             if leak_detected:
                 if self.multi_model is not None and hasattr(self.multi_model, "predict"):
                     try:
-                        leak_type = str(self.multi_model.predict(feature_df)[0])
-                    except Exception:
+                        multi_vals = [
+                            float(features.get(name, 0.0)) for name in self.multiclass_features
+                        ]
+                        df_multi = pd.DataFrame([multi_vals], columns=self.multiclass_features)
+                        leak_type = str(self.multi_model.predict(df_multi)[0])
+                    except Exception as exc:
+                        print(f"Warning: multiclass predict failed ({exc}); using rule fallback.")
                         leak_type = self._classify_leak_type(leak_prob, features)
                 else:
                     leak_type = self._classify_leak_type(leak_prob, features)
@@ -192,7 +217,7 @@ class LeakDetectionModel:
 
     def get_feature_importance(self) -> Optional[pd.DataFrame]:
         """Get feature importance from the binary model."""
-        if self.binary_model is None or self.feature_list is None:
+        if self.binary_model is None:
             return None
 
         try:
@@ -203,8 +228,11 @@ class LeakDetectionModel:
             else:
                 return None
 
+            names = self.binary_features
+            if len(importance) != len(names):
+                names = self.feature_list or names
             return pd.DataFrame(
-                {"feature": self.feature_list, "importance": importance}
+                {"feature": names, "importance": importance}
             ).sort_values("importance", ascending=False)
         except Exception as exc:
             print(f"Error getting feature importance: {exc}")

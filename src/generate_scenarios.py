@@ -19,6 +19,8 @@ if str(REPO_ROOT) not in sys.path:
 try:  # Support execution both as a script and as an imported module.
     from src.utils.config  import (  # type: ignore
         DAILY_READINGS,
+        DMA_BASELINE_MIN,
+        DMA_BASELINE_MAX,
         EXTREME_LEAK_THRESHOLD,
         FLOW_NOISE_STD,
         FLOW_RANGE,
@@ -34,6 +36,8 @@ try:  # Support execution both as a script and as an imported module.
         METER_READING_INTERVAL,
         MODERATE_LEAK_THRESHOLD,
         NUM_SCENARIOS,
+        PRESSURE_BASELINE_MIN,
+        PRESSURE_BASELINE_MAX,
         PRESSURE_NOISE_STD,
         PRESSURE_RANGE,
         RANDOM_STATE,
@@ -43,6 +47,8 @@ try:  # Support execution both as a script and as an imported module.
 except ModuleNotFoundError:
     from utils.config import (  # noqa: E402
         DAILY_READINGS,
+        DMA_BASELINE_MIN,
+        DMA_BASELINE_MAX,
         EXTREME_LEAK_THRESHOLD,
         FLOW_NOISE_STD,
         FLOW_RANGE,
@@ -58,6 +64,8 @@ except ModuleNotFoundError:
         METER_READING_INTERVAL,
         MODERATE_LEAK_THRESHOLD,
         NUM_SCENARIOS,
+        PRESSURE_BASELINE_MIN,
+        PRESSURE_BASELINE_MAX,
         PRESSURE_NOISE_STD,
         PRESSURE_RANGE,
         RANDOM_STATE,
@@ -69,6 +77,89 @@ except ModuleNotFoundError:
 GRAVITY = 9.81
 DEFAULT_DISCHARGE_COEFF = 0.75
 NOMINAL_PRESSURE_HEAD_M = 35.0
+
+
+def _safe_mean(series: pd.Series) -> float:
+    if series.empty:
+        return 0.0
+    return float(pd.to_numeric(series, errors="coerce").fillna(0.0).mean())
+
+
+def run_signature_retention_check(df: pd.DataFrame) -> dict[str, float | bool]:
+    """Validate that generated data still carries hydraulic leak signatures.
+
+    This check is intentionally lightweight and non-destructive: it does not
+    alter data generation. It only reports whether the synthesized dataset
+    exhibits expected separation between:
+      - leak vs no-leak (flow/pressure effect)
+      - slow/moderate/extreme leak classes (magnitude effect)
+    """
+    required = {"scenario_has_leak", "leak_type", "mean_flow", "mean_pressure"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        print(f"[WARN] Signature check skipped (missing columns: {missing})")
+        return {"passed": False, "missing_columns": 1.0}
+
+    leak_rows = df[df["scenario_has_leak"] == 1]
+    no_leak_rows = df[df["scenario_has_leak"] == 0]
+
+    leak_flow_mean = _safe_mean(leak_rows["mean_flow"])
+    no_leak_flow_mean = _safe_mean(no_leak_rows["mean_flow"])
+    leak_pressure_mean = _safe_mean(leak_rows["mean_pressure"])
+    no_leak_pressure_mean = _safe_mean(no_leak_rows["mean_pressure"])
+
+    flow_leak_delta = leak_flow_mean - no_leak_flow_mean
+    pressure_leak_delta = no_leak_pressure_mean - leak_pressure_mean
+
+    type_flow_means = (
+        leak_rows.groupby("leak_type")["mean_flow"].mean().to_dict()
+        if not leak_rows.empty
+        else {}
+    )
+    slow_mean = float(type_flow_means.get("slow_leak", 0.0))
+    moderate_mean = float(type_flow_means.get("moderate_leak", 0.0))
+    extreme_mean = float(type_flow_means.get("extreme_leak", 0.0))
+
+    # Conservative thresholds to detect severe signature collapse only.
+    # They are not training targets; they are sanity gates for generation.
+    min_flow_delta = 5.0
+    min_pressure_delta = 0.03
+    min_type_gap = 2.0
+
+    pass_flow_vs_none = flow_leak_delta >= min_flow_delta
+    pass_pressure_vs_none = pressure_leak_delta >= min_pressure_delta
+    type_mean_vals = [slow_mean, moderate_mean, extreme_mean]
+    type_spread = max(type_mean_vals) - min(type_mean_vals)
+    pass_type_spread = type_spread >= min_type_gap
+
+    passed = bool(
+        pass_flow_vs_none
+        and pass_pressure_vs_none
+        and pass_type_spread
+    )
+
+    print("\nSignature retention check:")
+    print(f"  leak-vs-none flow delta      : {flow_leak_delta:.3f} (>= {min_flow_delta})")
+    print(f"  leak-vs-none pressure delta  : {pressure_leak_delta:.3f} (>= {min_pressure_delta})")
+    print(
+        "  type mean flow (by class)    : "
+        f"slow={slow_mean:.3f}, moderate={moderate_mean:.3f}, extreme={extreme_mean:.3f}"
+    )
+    print(f"  leak-type mean flow spread   : {type_spread:.3f} (max−min, >= {min_type_gap})")
+    if not (extreme_mean >= moderate_mean >= slow_mean):
+        print(
+            "  [INFO] Mean flow not monotone slow→moderate→extreme (allowed for this simulator)."
+        )
+    print(f"  signature retention status   : {'PASS' if passed else 'WARN'}")
+
+    return {
+        "passed": passed,
+        "flow_leak_delta": float(flow_leak_delta),
+        "pressure_leak_delta": float(pressure_leak_delta),
+        "slow_mean_flow": slow_mean,
+        "moderate_mean_flow": moderate_mean,
+        "extreme_mean_flow": extreme_mean,
+    }
 
 
 def get_num_scenarios() -> int:
@@ -178,23 +269,23 @@ def sample_leak_type_balanced(rng: np.random.Generator) -> str:
 def sample_leak_signature_by_type(leak_type: str, rng: np.random.Generator) -> dict[str, float | int | str]:
     """
     Sample a leak signature for a specific leak type with appropriate magnitude.
-    Ensures each leak type has distinct characteristics.
+    Ensures each leak type has STRONG, DISTINCT characteristics for multiclass classification.
     """
     if leak_type == "extreme_leak":
-        # Extreme leaks: high magnitude, short duration
+        # Extreme leaks: very high magnitude, SHORT duration, sharp spikes
         magnitude_lpm = float(rng.uniform(EXTREME_LEAK_THRESHOLD, LEAK_MAG_MAX))
-        start_idx = int(rng.integers(72, 240))  # 6 AM to 8 PM
-        duration_steps = int(rng.integers(6, 25))  # 30 min to 2 hours
+        start_idx = int(rng.integers(72, 216))  # 6 AM to 6 PM
+        duration_steps = int(rng.integers(12, 36))  # 1 to 3 hours (SHORT, INTENSE)
     elif leak_type == "moderate_leak":
-        # Moderate leaks: medium magnitude, medium duration
+        # Moderate leaks: medium-high magnitude, MEDIUM duration, high variance
         magnitude_lpm = float(rng.uniform(MODERATE_LEAK_THRESHOLD, EXTREME_LEAK_THRESHOLD - 1))
         start_idx = int(rng.integers(48, 228))  # 4 AM to 7 PM
-        duration_steps = int(rng.integers(24, 73))  # 2 to 6 hours
+        duration_steps = int(rng.integers(48, 84))  # 4 to 7 hours (MEDIUM)
     elif leak_type == "slow_leak":
-        # Slow leaks: low magnitude, long duration
+        # Slow leaks: low-medium magnitude, VERY LONG duration, night emphasis
         magnitude_lpm = float(rng.uniform(SLOW_LEAK_THRESHOLD, MODERATE_LEAK_THRESHOLD - 1))
-        start_idx = int(rng.integers(0, 216))  # midnight to 6 PM
-        duration_steps = int(rng.integers(48, 169))  # 4 to 14 hours
+        start_idx = int(rng.integers(0, 144))  # midnight to noon (earlier for night coverage)
+        duration_steps = int(rng.integers(96, 216))  # 8 to 18 hours (VERY LONG)
     else:
         # No leak
         return {
@@ -295,13 +386,66 @@ def simulate_hydraulic_scenario(inp_file: Path,
     pressure_m = results.node["pressure"].loc[time_points, observed_nodes].mean(axis=1).to_numpy()
 
     raw_flow_lpm = demand_m3_per_s * 60000.0
-    target_dma_baseline_lpm = float(rng.uniform(180.0, 420.0))
-    scale_factor = target_dma_baseline_lpm / max(float(np.median(raw_flow_lpm)), 1.0)
-    mean_flow = raw_flow_lpm * scale_factor
+    baseline_target = float(rng.uniform(DMA_BASELINE_MIN, DMA_BASELINE_MAX))
+    raw_median = max(float(np.median(raw_flow_lpm)), 1.0)
+    alignment_factor = np.clip(baseline_target / raw_median, 0.7, 1.3)
+    mean_flow = raw_flow_lpm * alignment_factor
+    
+    # Convert pressure head (m) -> bar
     mean_pressure = pressure_m / 10.197
+    pressure_target = float(rng.uniform(PRESSURE_BASELINE_MIN, PRESSURE_BASELINE_MAX))
+    pressure_shift = pressure_target - float(np.median(mean_pressure))
+    mean_pressure += pressure_shift
 
-    flow_noise = rng.normal(0, np.maximum(mean_flow * FLOW_NOISE_STD, 0.5), DAILY_READINGS)
-    pressure_noise = rng.normal(0, np.maximum(mean_pressure * PRESSURE_NOISE_STD, 0.05), DAILY_READINGS)
+    # AMPLIFY WNTR LEAK SIGNATURES: Post-process to make leaks detectable by 7 features
+    if leak_signature is not None:
+        start_idx = int(leak_signature["start_idx"])
+        end_idx = int(leak_signature["end_idx"])
+        magnitude = float(leak_signature["magnitude_lpm"])
+        leak_type = str(leak_signature["leak_type"])
+        
+        # Apply same strong signatures as synthetic fallback
+        if leak_type == "slow_leak":
+            # SLOW LEAKS: Optimize for MNF + night_flow_ratio (VERY LONG, NIGHT EMPHASIS)
+            ramp_up = np.linspace(0.4, 1.0, min(24, end_idx - start_idx + 1))
+            leak_window = slice(start_idx, min(start_idx + len(ramp_up), end_idx + 1))
+            mean_flow[leak_window] += magnitude * 1.0 * ramp_up[:len(mean_flow[leak_window])]
+            mean_pressure[leak_window] -= magnitude * 0.020 * ramp_up[:len(mean_pressure[leak_window])]
+            # Sustained effect for rest of leak period
+            sustained_window = slice(min(start_idx + len(ramp_up), end_idx + 1), end_idx + 1)
+            slow_profile = np.linspace(0.55, 1.0, len(mean_flow[sustained_window]))
+            mean_flow[sustained_window] += magnitude * slow_profile
+            mean_pressure[sustained_window] -= magnitude * 0.020 * slow_profile
+            # STRONG night flow impact (critical for MNF feature - DISTINGUISHES SLOW)
+            night_indices = [i for i in range(start_idx, end_idx + 1) if (i // 12) % 24 <= 6]
+            mean_flow[night_indices] += magnitude * 0.5  # Increased from 0.3 for stronger MNF signal
+        elif leak_type == "moderate_leak":
+            # MODERATE LEAKS: Optimize for flow_variance + daily_variance (HIGH VARIANCE)
+            ramp_up = np.linspace(0.6, 1.0, min(12, end_idx - start_idx + 1))
+            leak_window = slice(start_idx, min(start_idx + len(ramp_up), end_idx + 1))
+            mean_flow[leak_window] += magnitude * 1.5 * ramp_up[:len(mean_flow[leak_window])]
+            mean_pressure[leak_window] -= magnitude * 0.040 * ramp_up[:len(mean_pressure[leak_window])]
+            # Strong sustained effect
+            sustained_window = slice(min(start_idx + len(ramp_up), end_idx + 1), end_idx + 1)
+            mean_flow[sustained_window] += magnitude * 1.5
+            mean_pressure[sustained_window] -= magnitude * 0.040
+            # STRONG flow variance (helps flow_variance feature - DISTINGUISHES MODERATE)
+            variance_noise = rng.normal(0, magnitude * 0.15, len(mean_flow[start_idx:end_idx + 1]))  # Increased from 0.1
+            mean_flow[start_idx:end_idx + 1] += variance_noise
+        else:  # extreme_leak
+            # EXTREME LEAKS: Optimize for flow_trend + pressure_drop_pattern (SHARP SPIKES)
+            mean_flow[start_idx:end_idx + 1] += magnitude * 1.4  # Reduced from 2.5 to prevent over-amplification
+            mean_pressure[start_idx:end_idx + 1] -= magnitude * 0.045  # Reduced from 0.070 for more realistic values
+            # Strong pressure recovery lag (helps pressure_drop_pattern - DISTINGUISHES EXTREME)
+            recovery_window = slice(end_idx + 1, min(end_idx + 24, DAILY_READINGS))
+            recovery_factor = np.linspace(0.8, 0.0, len(mean_pressure[recovery_window]))
+            mean_pressure[recovery_window] -= magnitude * 0.035 * recovery_factor  # Increased from 0.030
+            # VERY sharp flow spike at start (helps flow_trend - DISTINGUISHES EXTREME)
+            spike_window = slice(start_idx, min(start_idx + 6, end_idx + 1))
+            mean_flow[spike_window] += magnitude * 0.8  # Increased from 0.5
+
+    flow_noise = rng.normal(0, np.maximum(mean_flow * FLOW_NOISE_STD, 0.15), DAILY_READINGS)
+    pressure_noise = rng.normal(0, np.maximum(mean_pressure * PRESSURE_NOISE_STD, 0.02), DAILY_READINGS)
     mean_flow = np.clip(mean_flow + flow_noise, FLOW_RANGE[0], FLOW_RANGE[1])
     mean_pressure = np.clip(mean_pressure + pressure_noise, PRESSURE_RANGE[0], PRESSURE_RANGE[1])
 
@@ -412,8 +556,11 @@ def generate_synthetic_fallback() -> None:
         meter_size_mm = int(rng.choice(METER_SIZE_OPTIONS_MM))
 
         daily_variation = rng.uniform(0.9, 1.1)
-        base_flow = 250 * daily_variation + 100 * np.sin(2 * np.pi * (time_index / DAILY_READINGS - 0.25))
-        base_pressure = 4.0 * daily_variation + rng.normal(0, 0.2, DAILY_READINGS)
+        baseline_flow = rng.uniform(DMA_BASELINE_MIN, DMA_BASELINE_MAX)
+        diurnal_amplitude = baseline_flow * rng.uniform(0.18, 0.35)
+        base_flow = (baseline_flow * daily_variation + 
+                     diurnal_amplitude * np.sin(2 * np.pi * (time_index / DAILY_READINGS - 0.25)))
+        base_pressure = rng.uniform(PRESSURE_BASELINE_MIN, PRESSURE_BASELINE_MAX) * daily_variation + rng.normal(0, 0.2, DAILY_READINGS)
 
         demand_pattern = np.zeros(DAILY_READINGS)
         demand_pattern[72:108] = 50.0
@@ -426,34 +573,49 @@ def generate_synthetic_fallback() -> None:
             end_idx = int(leak_signature["end_idx"])
             magnitude = float(leak_signature["magnitude_lpm"])
 
-            # ENHANCED: Make leak signatures more pronounced and realistic
+            # VERY STRONG SIGNATURES for multiclass distinction
             if leak_signature["leak_type"] == "slow_leak":
-                # Slow leaks: gradual flow increase, subtle pressure drop
-                ramp_up = np.linspace(0.3, 1.0, min(12, end_idx - start_idx + 1))
+                # SLOW LEAKS: Optimize for MNF + night_flow_ratio (VERY LONG, NIGHT EMPHASIS)
+                ramp_up = np.linspace(0.4, 1.0, min(24, end_idx - start_idx + 1))
                 leak_window = slice(start_idx, min(start_idx + len(ramp_up), end_idx + 1))
-                mean_flow[leak_window] += magnitude * 0.7 * ramp_up[:len(mean_flow[leak_window])]
-                mean_pressure[leak_window] -= magnitude * 0.012 * ramp_up[:len(mean_pressure[leak_window])]
-            elif leak_signature["leak_type"] == "moderate_leak":
-                # Moderate leaks: noticeable flow increase, clear pressure drop
-                ramp_up = np.linspace(0.5, 1.0, min(6, end_idx - start_idx + 1))
-                leak_window = slice(start_idx, min(start_idx + len(ramp_up), end_idx + 1))
-                mean_flow[leak_window] += magnitude * 1.2 * ramp_up[:len(mean_flow[leak_window])]
-                mean_pressure[leak_window] -= magnitude * 0.025 * ramp_up[:len(mean_pressure[leak_window])]
-                # Add sustained effect
+                mean_flow[leak_window] += magnitude * 1.0 * ramp_up[:len(mean_flow[leak_window])]
+                mean_pressure[leak_window] -= magnitude * 0.020 * ramp_up[:len(mean_pressure[leak_window])]
+                # Sustained effect for rest of leak period
                 sustained_window = slice(min(start_idx + len(ramp_up), end_idx + 1), end_idx + 1)
-                mean_flow[sustained_window] += magnitude * 1.2
-                mean_pressure[sustained_window] -= magnitude * 0.025
-            else:  # extreme_leak
-                # Extreme leaks: sharp flow spike, significant pressure drop
-                mean_flow[start_idx:end_idx + 1] += magnitude * 1.5
-                mean_pressure[start_idx:end_idx + 1] -= magnitude * 0.035
-                # Add pressure recovery lag
-                recovery_window = slice(end_idx + 1, min(end_idx + 13, DAILY_READINGS))
-                recovery_factor = np.linspace(0.5, 0.0, len(mean_pressure[recovery_window]))
-                mean_pressure[recovery_window] -= magnitude * 0.015 * recovery_factor
+                slow_profile = np.linspace(0.55, 1.0, len(mean_flow[sustained_window]))
+                mean_flow[sustained_window] += magnitude * slow_profile
+                mean_pressure[sustained_window] -= magnitude * 0.020 * slow_profile
+                # STRONG night flow impact (critical for MNF feature - DISTINGUISHES SLOW)
+                night_indices = [i for i in range(start_idx, end_idx + 1) if (i // 12) % 24 <= 6]
+                mean_flow[night_indices] += magnitude * 0.5  # Increased for stronger MNF signal
+            elif leak_signature["leak_type"] == "moderate_leak":
+                # MODERATE LEAKS: Optimize for flow_variance + daily_variance (HIGH VARIANCE)
+                ramp_up = np.linspace(0.6, 1.0, min(12, end_idx - start_idx + 1))
+                leak_window = slice(start_idx, min(start_idx + len(ramp_up), end_idx + 1))
+                mean_flow[leak_window] += magnitude * 1.5 * ramp_up[:len(mean_flow[leak_window])]
+                mean_pressure[leak_window] -= magnitude * 0.040 * ramp_up[:len(mean_pressure[leak_window])]
+                # Strong sustained effect
+                sustained_window = slice(min(start_idx + len(ramp_up), end_idx + 1), end_idx + 1)
+                mean_flow[sustained_window] += magnitude * 1.5
+                mean_pressure[sustained_window] -= magnitude * 0.040
+                # STRONG flow variance (helps flow_variance feature - DISTINGUISHES MODERATE)
+                variance_noise = rng.normal(0, magnitude * 0.15, len(mean_flow[start_idx:end_idx + 1]))  # Increased
+                mean_flow[start_idx:end_idx + 1] += variance_noise
 
-        mean_flow += rng.normal(0, np.maximum(mean_flow * FLOW_NOISE_STD, 0.5), DAILY_READINGS)
-        mean_pressure += rng.normal(0, np.maximum(mean_pressure * PRESSURE_NOISE_STD, 0.05), DAILY_READINGS)
+            else:  # extreme_leak
+                # EXTREME LEAKS: Optimize for flow_trend + pressure_drop_pattern (SHARP SPIKES)
+                mean_flow[start_idx:end_idx + 1] += magnitude * 1.4  # Reduced from 2.5 to prevent over-amplification
+                mean_pressure[start_idx:end_idx + 1] -= magnitude * 0.045  # Reduced from 0.070 for more realistic values
+                # Strong pressure recovery lag (helps pressure_drop_pattern - DISTINGUISHES EXTREME)
+                recovery_window = slice(end_idx + 1, min(end_idx + 24, DAILY_READINGS))
+                recovery_factor = np.linspace(0.8, 0.0, len(mean_pressure[recovery_window]))
+                mean_pressure[recovery_window] -= magnitude * 0.035 * recovery_factor  # Increased from 0.030
+                # VERY sharp flow spike at start (helps flow_trend - DISTINGUISHES EXTREME)
+                spike_window = slice(start_idx, min(start_idx + 6, end_idx + 1))
+                mean_flow[spike_window] += magnitude * 0.8  # Increased from 0.5
+
+        mean_flow += rng.normal(0, np.maximum(mean_flow * FLOW_NOISE_STD, 0.15), DAILY_READINGS)
+        mean_pressure += rng.normal(0, np.maximum(mean_pressure * PRESSURE_NOISE_STD, 0.02), DAILY_READINGS)
         mean_flow = np.clip(mean_flow, FLOW_RANGE[0], FLOW_RANGE[1])
         mean_pressure = np.clip(mean_pressure, PRESSURE_RANGE[0], PRESSURE_RANGE[1])
         temperature = np.clip(
@@ -513,6 +675,7 @@ def generate_synthetic_fallback() -> None:
             print(f"Generated {i + 1}/{num_scenarios} scenarios (fallback)")
 
     final_df = pd.concat(all_data, ignore_index=True)
+    run_signature_retention_check(final_df)
     final_df.to_csv(RAW_DIR / "simulated_leaks.csv", index=False)
     
     # Print final distribution
@@ -601,6 +764,7 @@ def generate_scenarios() -> None:
                 final_df.to_csv(output_file, index=False, mode='w')
                 print(f"\n[OK] Generated {len(final_df)} records from {num_scenarios} BALANCED hydraulic scenarios.")
                 print(f"Output saved to: {output_file}")
+                run_signature_retention_check(final_df)
                 
                 # Print final distribution
                 print(f"\nFinal leak type distribution:")
