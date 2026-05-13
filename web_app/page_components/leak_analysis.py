@@ -375,9 +375,9 @@ def show_leak_analysis() -> None:
                 hovertemplate="Flow: %{x:.2f}<br>Pressure: %{y:.2f}<extra></extra>",
             ))
             fig_cm.update_layout(**{**_CHART_BASE, "height": 240,
-                "xaxis": dict(title="FLOW (M³/H)", titlefont=dict(size=8, color="#475569"),
+                "xaxis": dict(title=dict(text="FLOW (M³/H)", font=dict(size=8, color="#475569")),
                               showgrid=False, color="#475569"),
-                "yaxis": dict(title="PRESSURE (PSI)", titlefont=dict(size=8, color="#475569"),
+                "yaxis": dict(title=dict(text="PRESSURE (PSI)", font=dict(size=8, color="#475569")),
                               showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="#475569")})
             st.plotly_chart(fig_cm, use_container_width=True)
         else:
