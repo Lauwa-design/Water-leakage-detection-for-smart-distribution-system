@@ -1,4 +1,4 @@
-"""Team Management Page - THIWASCO Leak Detection System"""
+﻿"""Team Management Page - THIWASCO Leak Detection System"""
 
 import streamlit as st
 import pandas as pd
@@ -10,19 +10,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.mysql_database_manager import db_manager
 from backend.rbac import (
-    has_permission, 
-    Permissions, 
+    has_permission,
+    Permissions,
     is_nrw_officer,
     get_current_user_id,
     get_current_user_role,
     show_permission_denied,
     can_manage_teams
 )
+from page_components.ui import page_header
 
 
 def show_teams():
     """Main team management page"""
-    st.title("Team Management")
+    page_header("Teams", "Manage field teams and assign leak response tasks.", eyebrow="Team Management")
     
     current_role = get_current_user_role()
     current_user_id = get_current_user_id()
@@ -59,109 +60,143 @@ def show_teams():
 
 
 def show_all_teams():
-    """Display all teams with management options (NRW Officer view)"""
-    st.subheader("All Teams")
-    
+    """Display all teams with inline member lists (NRW Officer view)."""
     teams_df = db_manager.get_all_teams()
-    
+
     if teams_df.empty:
         st.info("No teams have been created yet.")
         return
-    
-    # Filter active teams
-    active_teams = teams_df[teams_df['status'] == 'active']
-    
+
+    active_teams = teams_df[teams_df['status'] == 'active'].copy()
     if active_teams.empty:
         st.warning("No active teams found.")
         return
-    
-    st.write(f"**Total Active Teams:** {len(active_teams)}")
-    
-    # Display teams as cards
-    for idx, team in active_teams.iterrows():
-        with st.expander(f"{team['name']} ({team['member_count']} members)", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.write(f"**Description:** {team['description'] or 'No description'}")
-                st.write(f"**Created:** {team['created_at'].strftime('%Y-%m-%d %H:%M')}")
-                st.write(f"**Status:** {team['status'].upper()}")
-                
-                # Get team details with members
-                team_details = db_manager.get_team(team['id'])
-                if team_details and team_details['members']:
-                    st.write("**Team Members:**")
-                    for member in team_details['members']:
-                        st.write(f"  • {member['name']} ({member['user_id']})")
-                else:
-                    st.write("**Team Members:** None")
-            
-            with col2:
-                # Management buttons (NRW Officer only)
+
+    st.markdown(
+        f"<p style='font-size:0.82rem;color:#94a3b8;margin:0 0 1rem;'>"
+        f"{len(active_teams)} active team{'s' if len(active_teams) != 1 else ''}</p>",
+        unsafe_allow_html=True,
+    )
+
+    for _, team_row in active_teams.iterrows():
+        team_id   = int(team_row['id'])
+        team_name = team_row['name']
+        created   = team_row['created_at'].strftime('%Y-%m-%d') if pd.notna(team_row['created_at']) else '—'
+        desc      = team_row.get('description') or ''
+
+        # Fetch full details (with members) once per team
+        details = db_manager.get_team(team_id)
+        members = details['members'] if details and details.get('members') else []
+
+        # Build member pills HTML
+        if members:
+            pills_html = " ".join(
+                f"<span style='display:inline-flex;align-items:center;gap:5px;"
+                f"background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.22);"
+                f"border-radius:5px;padding:3px 10px;font-size:0.75rem;color:#94a3b8;margin:2px;'>"
+                f"<span style='color:#22c55e;font-weight:700;font-size:0.7rem;'>FT</span>"
+                f"{m['name']}"
+                f"<span style='color:#475569;font-size:0.68rem;'>· {m['user_id']}</span>"
+                f"</span>"
+                for m in members
+            )
+        else:
+            pills_html = "<span style='color:#475569;font-size:0.78rem;font-style:italic;'>No members assigned</span>"
+
+        desc_row = f"<p style='font-size:0.78rem;color:#64748b;margin:0 0 8px;'>{desc}</p>" if desc else ""
+        member_label = 'members' if len(members) != 1 else 'member'
+        st.html(
+            f"<div style='background:#0d1526;border:1px solid rgba(255,255,255,0.07);"
+            f"border-radius:10px;padding:14px 18px 12px;margin-bottom:10px;'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;'>"
+            f"<div>"
+            f"<span style='font-size:1rem;font-weight:700;color:#e2e8f0;'>{team_name}</span>"
+            f"<span style='margin-left:10px;font-size:0.68rem;font-weight:700;"
+            f"background:rgba(34,197,94,0.10);color:#22c55e;"
+            f"border:1px solid rgba(34,197,94,0.35);border-radius:4px;padding:1px 8px;"
+            f"box-shadow:0 0 8px 1px rgba(34,197,94,0.50),0 0 18px 2px rgba(34,197,94,0.22);'>"
+            f"ACTIVE</span>"
+            f"</div>"
+            f"<span style='font-size:0.7rem;color:#475569;'>Created {created}"
+            f"&nbsp;&middot;&nbsp; {len(members)} {member_label}</span>"
+            f"</div>"
+            f"{desc_row}"
+            f"<div style='margin-top:6px;'>{pills_html}</div>"
+            f"</div>"
+        )
+
+        # Edit / Delete buttons inline under the card
+        if has_permission(Permissions.TEAM_UPDATE) or has_permission(Permissions.TEAM_DELETE):
+            col_edit, col_del, col_spacer = st.columns([1, 1, 6])
+            with col_edit:
                 if has_permission(Permissions.TEAM_UPDATE):
-                    if st.button(f"Edit", key=f"edit_{team['id']}"):
-                        st.session_state[f'editing_team_{team["id"]}'] = True
+                    if st.button("Edit", key=f"edit_{team_id}"):
+                        st.session_state[f'editing_team_{team_id}'] = True
                         st.rerun()
-                
+            with col_del:
                 if has_permission(Permissions.TEAM_DELETE):
-                    if st.button(f"Delete", key=f"delete_{team['id']}"):
-                        st.session_state[f'confirm_delete_{team["id"]}'] = True
+                    if st.button("Delete", key=f"delete_{team_id}"):
+                        st.session_state[f'confirm_delete_{team_id}'] = True
                         st.rerun()
-            
-            # Edit form (inline)
-            if st.session_state.get(f'editing_team_{team["id"]}', False):
-                show_edit_team_form(team['id'])
-            
-            # Delete confirmation
-            if st.session_state.get(f'confirm_delete_{team["id"]}', False):
-                st.warning(f"Are you sure you want to delete team **{team['name']}**?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("Yes, Delete", key=f"confirm_yes_{team['id']}"):
-                        success, msg = db_manager.delete_team(team['id'], get_current_user_id())
-                        if success:
-                            st.success(msg)
-                            st.session_state.pop(f'confirm_delete_{team["id"]}', None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("Cancel", key=f"confirm_no_{team['id']}"):
-                        st.session_state.pop(f'confirm_delete_{team["id"]}', None)
+
+        if st.session_state.get(f'editing_team_{team_id}', False):
+            show_edit_team_form(team_id)
+
+        if st.session_state.get(f'confirm_delete_{team_id}', False):
+            st.warning(f"Are you sure you want to delete **{team_name}**?")
+            cy, cn = st.columns(2)
+            with cy:
+                if st.button("Yes, Delete", key=f"confirm_yes_{team_id}"):
+                    success, msg = db_manager.delete_team(team_id, get_current_user_id())
+                    if success:
+                        st.success(msg)
+                        st.session_state.pop(f'confirm_delete_{team_id}', None)
                         st.rerun()
+                    else:
+                        st.error(msg)
+            with cn:
+                if st.button("Cancel", key=f"confirm_no_{team_id}"):
+                    st.session_state.pop(f'confirm_delete_{team_id}', None)
+                    st.rerun()
+
+        st.markdown("<div style='margin-bottom:4px;'></div>", unsafe_allow_html=True)
 
 
 def show_my_teams(user_id: str):
     """Display teams the current user belongs to (Field Technician view)"""
     st.subheader("My Teams")
-    
+
     teams_df = db_manager.get_teams_by_user(user_id)
-    
+
     if teams_df.empty:
         st.info("You are not assigned to any teams yet.")
         return
-    
+
     st.write(f"**You are a member of {len(teams_df)} team(s)**")
-    
-    # Display teams as cards
-    for idx, team in teams_df.iterrows():
-        with st.expander(f"{team['name']} ({team['member_count']} members)", expanded=False):
-            st.write(f"**Description:** {team['description'] or 'No description'}")
-            st.write(f"**Created:** {team['created_at'].strftime('%Y-%m-%d %H:%M')}")
-            
-            # Get team details with members
-            team_details = db_manager.get_team(team['id'])
-            if team_details and team_details['members']:
-                st.write("**Team Members:**")
-                for member in team_details['members']:
-                    st.write(f"  • {member['name']} ({member['user_id']})")
-            
-            # Show assigned alerts
-            alerts_df = db_manager.get_alerts_by_team(team['id'], hours=168)  # Last 7 days
-            if not alerts_df.empty:
-                active_alerts = alerts_df[alerts_df['status'] != 'resolved']
-                st.write(f"**Active Alerts:** {len(active_alerts)}")
-                st.write(f"**Total Alerts (7 days):** {len(alerts_df)}")
+
+    display_df = teams_df[['name', 'member_count']].copy()
+    display_df = display_df.rename(columns={'name': 'Team Name', 'member_count': 'Members'})
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    team_options = [f"{row['name']}" for _, row in teams_df.iterrows()]
+    selected_name = st.selectbox("View team details", team_options, key="select_my_team")
+    team = teams_df[teams_df['name'] == selected_name].iloc[0]
+
+    st.write(f"**Description:** {team['description'] or 'No description'}")
+    st.write(f"**Created:** {team['created_at'].strftime('%Y-%m-%d %H:%M')}")
+
+    team_details = db_manager.get_team(int(team['id']))
+    if team_details and team_details['members']:
+        st.write("**Team Members:**")
+        for member in team_details['members']:
+            st.write(f"  • {member['name']} ({member['user_id']})")
+
+    alerts_df = db_manager.get_alerts_by_team(int(team['id']), hours=168)
+    if not alerts_df.empty:
+        active_alerts = alerts_df[alerts_df['status'] != 'resolved']
+        st.write(f"**Active Alerts:** {len(active_alerts)}")
+        st.write(f"**Total Alerts (7 days):** {len(alerts_df)}")
 
 
 def show_create_team_form():
@@ -176,18 +211,27 @@ def show_create_team_form():
         team_name = st.text_input("Team Name *", placeholder="e.g., Thika Central Response Team")
         team_description = st.text_area("Description", placeholder="Brief description of team responsibilities")
         
-        # Get available Field Technicians
+        # Get available Field Technicians — only those not already in a team
         technicians_df = db_manager.get_field_technicians()
-        
+
         if technicians_df.empty:
             st.error("No Field Technicians available. Please create Field Technician users first.")
             st.form_submit_button("Create Team", disabled=True)
             return
-        
+
+        available = technicians_df[technicians_df['current_team'].isna()]
+        assigned_count = len(technicians_df) - len(available)
+        if assigned_count:
+            st.info(f"{assigned_count} technician(s) are already in a team and cannot be added to a new one.")
+        if available.empty:
+            st.error("All Field Technicians are currently assigned to teams. A technician can only be in one team.")
+            st.form_submit_button("Create Team", disabled=True)
+            return
+
         # Create options for multiselect
-        tech_options = {f"{row['name']} ({row['user_id']})": row['user_id'] 
-                       for _, row in technicians_df.iterrows()}
-        
+        tech_options = {f"{row['name']} ({row['user_id']})": row['user_id']
+                        for _, row in available.iterrows()}
+
         st.write("**Select Team Members (2-6 Field Technicians) ***")
         selected_members = st.multiselect(
             "Team Members",
@@ -242,22 +286,27 @@ def show_edit_team_form(team_id: int):
         team_name = st.text_input("Team Name *", value=team['name'])
         team_description = st.text_area("Description", value=team['description'] or "")
         
-        # Get available Field Technicians
+        # Get available Field Technicians:
+        # show current team members + technicians not in any active team
         technicians_df = db_manager.get_field_technicians()
-        
+
         if technicians_df.empty:
             st.error("No Field Technicians available")
             st.form_submit_button("Update Team", disabled=True)
             return
-        
-        # Create options for multiselect
-        tech_options = {f"{row['name']} ({row['user_id']})": row['user_id'] 
-                       for _, row in technicians_df.iterrows()}
-        
-        # Pre-select current members
+
         current_member_ids = [m['user_id'] for m in team['members']]
+        available = technicians_df[
+            technicians_df['current_team'].isna() |
+            technicians_df['user_id'].isin(current_member_ids)
+        ]
+
+        # Create options for multiselect
+        tech_options = {f"{row['name']} ({row['user_id']})": row['user_id']
+                        for _, row in available.iterrows()}
+
         default_selection = [name for name, uid in tech_options.items() if uid in current_member_ids]
-        
+
         st.write("**Select Team Members (2-6 Field Technicians) ***")
         selected_members = st.multiselect(
             "Team Members",

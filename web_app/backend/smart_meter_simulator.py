@@ -60,18 +60,23 @@ class SmartMeterSimulator:
         hour = datetime.now().hour
         is_night = 0 <= hour < 6
         is_peak = 6 <= hour < 9 or 17 <= hour < 21
-        
-        # Normal demand patterns (not noise)
+
         if is_night:
-            expected_flow = base_flow * 0.3  # Night usage is low
-            expected_pressure = base_pressure * 0.95  # Slightly higher at night
+            expected_flow = base_flow * 0.3
+            expected_pressure = base_pressure * 0.95
         elif is_peak:
-            expected_flow = base_flow * 1.5  # Peak usage
-            expected_pressure = base_pressure * 0.85  # Pressure drops during peak
+            expected_flow = base_flow * 1.5
+            expected_pressure = base_pressure * 0.85
         else:
             expected_flow = base_flow
             expected_pressure = base_pressure
-        
+
+        # Realistic measurement noise — matches training data spread (std_f ≈ 5%,
+        # std_p ≈ 0.75%).  Without this every reading in a period is identical,
+        # producing all-zero variance features that confuse the classifier.
+        expected_flow     = max(0.0, expected_flow     + np.random.normal(0, expected_flow     * 0.05))
+        expected_pressure = max(0.0, expected_pressure + np.random.normal(0, expected_pressure * 0.0075))
+
         # Hydraulic orifice-based leak simulation
         # Flow through orifice: Q = C * A * sqrt(2 * g * h) ~ sqrt(pressure)
         if leak_type == LeakType.INSTANT:
@@ -92,15 +97,12 @@ class SmartMeterSimulator:
         else:
             pressure_loss = 0
             flow_increase = 0
-        
+
         # Apply hydraulic principles
-        # Pressure drops when leak occurs (Bernoulli principle)
-        pressure = max(30, expected_pressure - pressure_loss)
-        
-        # Flow increases due to leak (orifice equation)
-        flow_rate = max(0, expected_flow + flow_increase)
-        
-        # Temperature varies slightly (not hydraulic, but realistic)
+        pressure  = max(30, expected_pressure - pressure_loss)
+        flow_rate = max(0,  expected_flow     + flow_increase)
+
+        # Temperature varies slightly
         temperature = 20 + np.random.normal(0, 0.5)
         
         reading = {
@@ -146,13 +148,13 @@ class SmartMeterSimulator:
                     # Note: ML predictions are now handled by the prediction_loop service
                     # Simulator only writes sensor readings, keeping concerns separate
 
-                # Realistic leak injection: max 10 concurrent leaks, lower probability
-                MAX_CONCURRENT_LEAKS = 10
+                # Realistic leak injection: max 3 concurrent leaks, ~10% chance every 2 min
+                MAX_CONCURRENT_LEAKS = 3
                 leak_check_counter += 1
 
-                # Only inject if under cap and with realistic probability (5% chance per cycle)
+                # Check every 24 cycles (~2 min); 10% probability → realistic leak rate
                 if len(self.leak_scenarios) < MAX_CONCURRENT_LEAKS:
-                    if leak_check_counter % 6 == 0 and random.random() < 0.05:  # ~5% every 30 seconds
+                    if leak_check_counter % 24 == 0 and random.random() < 0.10:  # ~10% every 2 min
                         # Pick a random meter that doesn't already have a leak
                         available_meters = [m for m in self.meters if m not in self.leak_scenarios]
                         if available_meters:
@@ -174,7 +176,7 @@ class SmartMeterSimulator:
 
                             self.trigger_leak_scenario(target_meter, leak_type, magnitude, duration)
                             meter_info = self.meters[target_meter]
-                            print(f"[SIM] Leak #{len(self.leak_scenarios)}/{MAX_CONCURRENT_LEAKS}: {target_meter} ({meter_info['location']}) - {leak_type.value}, magnitude={magnitude:.2f}, duration={duration}min")
+                            print(f"[SIM] Leak {len(self.leak_scenarios)}/{MAX_CONCURRENT_LEAKS}: {target_meter} ({meter_info['location']}) - {leak_type.value}, mag={magnitude:.2f}, dur={duration}min")
                 
                 time.sleep(5)  # Generate reading every 5 seconds
             except Exception as e:

@@ -1,4 +1,4 @@
-"""Alerts page - operational queue for leak response."""
+﻿"""Alerts page - operational queue for leak response."""
 
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ def show_alerts() -> None:
             "prediction_time": "Detected At",
         }
     )
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(display, width='stretch', hide_index=True)
 
 
 
@@ -226,7 +226,7 @@ def show_team_assignment_ui(leak_alerts: pd.DataFrame) -> None:
                 'status': 'Status',
                 'created_at': 'Created'
             })
-            st.dataframe(display_assignments, use_container_width=True, hide_index=True)
+            st.dataframe(display_assignments, width='stretch', hide_index=True)
         else:
             st.info("No alerts have been assigned to teams yet.")
     else:

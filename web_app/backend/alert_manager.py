@@ -109,7 +109,21 @@ class AlertManager:
         Returns:
             (success, message)
         """
-        return self.db.resolve_alert(alert_id, resolved_by)
+        success, msg = self.db.resolve_alert(alert_id, resolved_by)
+        if success:
+            # Cancel the simulator's leak scenario for that meter so the model
+            # stops detecting it and doesn't immediately re-raise a new alert.
+            try:
+                alert_df = self.db._query_to_df(
+                    "SELECT meter_id FROM alerts WHERE id = %s", (alert_id,)
+                )
+                if not alert_df.empty:
+                    meter_id = alert_df.iloc[0]["meter_id"]
+                    from backend.smart_meter_simulator import smart_meter_simulator
+                    smart_meter_simulator.leak_scenarios.pop(meter_id, None)
+            except Exception:
+                pass  # Non-fatal — scenario will expire on its own
+        return success, msg
     
     def bulk_resolve_alerts(self, alert_ids: List[int], 
                            resolved_by: str) -> Tuple[int, int, List[str]]:

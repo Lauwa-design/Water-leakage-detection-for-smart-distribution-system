@@ -8,42 +8,64 @@ import threading
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class MySQLDatabaseManager:
     """MySQL-backed database manager for THIWASCO leak detection system."""
     
     def __init__(self, host=None, port=None, database=None, user=None, password=None):
-        # Allow environment variables or direct parameters
+        resolved_password = password or os.getenv('MYSQL_PASSWORD')
+        if resolved_password is None:
+            raise ValueError(
+                "MySQL password not set. Pass the 'password' argument or set the "
+                "MYSQL_PASSWORD environment variable."
+            )
         self.config = {
             'host': host or os.getenv('MYSQL_HOST', 'localhost'),
             'port': port or int(os.getenv('MYSQL_PORT', '3306')),
             'database': database or os.getenv('MYSQL_DATABASE', 'thiwasco_1'),
             'user': user or os.getenv('MYSQL_USER', 'root'),
-            'password': password or os.getenv('MYSQL_PASSWORD', 'MyNewSecurePassword!'),
-            'autocommit': False,
+            'password': resolved_password,
+            'autocommit': True,
             'connection_timeout': 30,
         }
         self._local = threading.local()
         self._initialized = False
-    
+
+    def _new_conn(self):
+        """Open a fresh connection and initialise the schema."""
+        try:
+            conn = mysql.connector.connect(**self.config)
+            self._init_db(conn)
+            return conn
+        except mysql.connector.Error as e:
+            if "Unknown database" in str(e):
+                print(f"Database '{self.config['database']}' does not exist. Creating it...")
+                self._create_database()
+                conn = mysql.connector.connect(**self.config)
+                self._init_db(conn)
+                return conn
+            print(f"Database connection error: {e}")
+            raise
+
     def _get_conn(self, readonly: bool = False):
-        """Get a database connection from the pool."""
-        if not hasattr(self._local, 'conn') or self._local.conn is None:
+        """Return a healthy per-thread connection, reconnecting if necessary."""
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            self._local.conn = self._new_conn()
+        else:
             try:
-                # First try to connect to the specified database
-                self._local.conn = mysql.connector.connect(**self.config)
-                self._init_db(self._local.conn)
-            except mysql.connector.Error as e:
-                # If database doesn't exist, create it and reconnect
-                if "Unknown database" in str(e):
-                    print(f"Database '{self.config['database']}' does not exist. Creating it...")
-                    self._create_database()
-                    # Retry connection after creating database
-                    self._local.conn = mysql.connector.connect(**self.config)
-                    self._init_db(self._local.conn)
-                else:
-                    print(f"Database connection error: {e}")
-                    raise
+                if not conn.is_connected():
+                    conn.reconnect(attempts=2, delay=1)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.conn = self._new_conn()
         return self._local.conn
     
     def _create_database(self):
@@ -99,6 +121,21 @@ class MySQLDatabaseManager:
             )
         ''')
         
+        # Users table — must precede alerts and teams (both have FKs to users)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id VARCHAR(50) PRIMARY KEY,
+                username VARCHAR(100) NOT NULL,
+                email VARCHAR(100) NOT NULL UNIQUE,
+                name VARCHAR(100) NOT NULL,
+                role VARCHAR(50) NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                status VARCHAR(20) DEFAULT 'active',
+                last_login TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Sensor readings table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -111,7 +148,7 @@ class MySQLDatabaseManager:
                 FOREIGN KEY (meter_id) REFERENCES meters(meter_id)
             )
         ''')
-        
+
         # Leak predictions table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS leak_predictions (
@@ -125,8 +162,8 @@ class MySQLDatabaseManager:
                 FOREIGN KEY (meter_id) REFERENCES meters(meter_id)
             )
         ''')
-        
-        # Alerts table
+
+        # Alerts table — depends on meters (meter_id FK) and users (resolved_by FK)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS alerts (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -143,22 +180,7 @@ class MySQLDatabaseManager:
                 FOREIGN KEY (resolved_by) REFERENCES users(user_id)
             )
         ''')
-        
-        # Users table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id VARCHAR(50) PRIMARY KEY,
-                username VARCHAR(100) NOT NULL,
-                email VARCHAR(100) NOT NULL UNIQUE,
-                name VARCHAR(100) NOT NULL,
-                role VARCHAR(50) NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
-                status VARCHAR(20) DEFAULT 'active',
-                last_login TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
+
         # Teams table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS teams (
@@ -223,27 +245,76 @@ class MySQLDatabaseManager:
                 ADD FOREIGN KEY (resolved_by) REFERENCES users(user_id)
             ''')
         
+        # User sessions table — persists login tokens across page reloads
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token       VARCHAR(64)  PRIMARY KEY,
+                user_id     VARCHAR(50)  NOT NULL,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                expires_at  TIMESTAMP    NOT NULL,
+                last_activity TIMESTAMP  DEFAULT CURRENT_TIMESTAMP,
+                remember_me BOOLEAN      DEFAULT FALSE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+
+        # Performance indexes — silently skip if already exist (errno 1061)
+        for idx_sql in [
+            "CREATE INDEX idx_sr_ts         ON sensor_readings (timestamp)",
+            "CREATE INDEX idx_sr_meter_ts   ON sensor_readings (meter_id, timestamp)",
+            "CREATE INDEX idx_lp_ts         ON leak_predictions (timestamp)",
+            "CREATE INDEX idx_lp_meter_ts   ON leak_predictions (meter_id, timestamp)",
+            "CREATE INDEX idx_al_created    ON alerts (created_at)",
+            "CREATE INDEX idx_al_meter_stat ON alerts (meter_id, status)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except mysql.connector.Error:
+                pass  # index already exists
+
         conn.commit()
         cursor.close()
-    
+
     def _query_to_df(self, query, params=None) -> pd.DataFrame:
-        """Execute query and return DataFrame."""
-        conn = self._get_conn()
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        results = cursor.fetchall()
-        cursor.close()
-        if results:
-            return pd.DataFrame(results)
-        return pd.DataFrame()
+        """Execute query and return DataFrame, reconnecting on a dead connection."""
+        for attempt in range(2):
+            try:
+                conn = self._get_conn()
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute(query, params or ())
+                results = cursor.fetchall()
+                cursor.close()
+                return pd.DataFrame(results) if results else pd.DataFrame()
+            except mysql.connector.errors.DatabaseError as exc:
+                if attempt == 0:
+                    try:
+                        self._local.conn.close()
+                    except Exception:
+                        pass
+                    self._local.conn = None
+                    continue
+                raise
     
-    def _execute(self, query, params=None):
-        """Execute a write operation."""
-        conn = self._get_conn()
-        cursor = conn.cursor()
-        cursor.execute(query, params or ())
-        conn.commit()
-        cursor.close()
+    def _execute(self, query, params=None, _retries: int = 2):
+        """Execute a write operation, retrying once on lock-wait timeout (1205)."""
+        for attempt in range(_retries):
+            try:
+                conn = self._get_conn()
+                cursor = conn.cursor()
+                cursor.execute(query, params or ())
+                cursor.close()
+                return
+            except mysql.connector.errors.DatabaseError as exc:
+                if exc.errno == 1205 and attempt < _retries - 1:
+                    try:
+                        self._local.conn.close()
+                    except Exception:
+                        pass
+                    self._local.conn = None
+                    import time as _time
+                    _time.sleep(0.5)
+                    continue
+                raise
     
     # === READ OPERATIONS ===
     
@@ -312,10 +383,17 @@ class MySQLDatabaseManager:
         )
     
     def get_field_technicians(self) -> pd.DataFrame:
-        """Get all users with Field Technician role"""
-        return self._query_to_df(
-            "SELECT user_id, name, email, status FROM users WHERE role = 'Field Technician' AND status = 'active'"
-        )
+        """Get all active Field Technicians with their current team assignment (if any)."""
+        return self._query_to_df("""
+            SELECT u.user_id, u.name, u.email, u.status,
+                   (SELECT t.name FROM team_members tm
+                    JOIN teams t ON tm.team_id = t.id
+                    WHERE tm.user_id = u.user_id AND t.status = 'active'
+                    LIMIT 1) AS current_team
+            FROM users u
+            WHERE u.role = 'Field Technician' AND u.status = 'active'
+            ORDER BY u.name
+        """)
     
     def get_users_by_role(self, role: str) -> pd.DataFrame:
         """Get all users with a specific role"""
@@ -405,21 +483,42 @@ class MySQLDatabaseManager:
             (meter_id, zone_id, severity, title, message)
         )
     
-    def get_active_alert_for_meter(self, meter_id: str, severity: str, hours: int = 24) -> Optional[Dict]:
-        """Check if there's an active unresolved alert for a specific meter"""
-        since = datetime.now() - timedelta(hours=hours)
+    def get_active_alert_for_meter(self, meter_id: str, severity: str = None, hours: int = None) -> Optional[Dict]:
+        """Return the most recent unresolved alert for a meter, regardless of severity.
+
+        One active alert per meter at any time — the severity parameter is ignored
+        so that a confidence change (warning → critical) does not create a second alert.
+        """
         df = self._query_to_df('''
-            SELECT id, severity, status, created_at 
-            FROM alerts 
-            WHERE meter_id = %s AND severity = %s AND status != 'resolved' AND created_at > %s
+            SELECT id, severity, status, created_at
+            FROM alerts
+            WHERE meter_id = %s AND status != 'resolved'
             ORDER BY created_at DESC
             LIMIT 1
-        ''', (meter_id, severity, since))
-        
+        ''', (meter_id,))
+
         if not df.empty:
             return df.iloc[0].to_dict()
         return None
     
+    def get_recent_zone_alert(self, zone_id: str, within_minutes: int = 15) -> Optional[Dict]:
+        """Return the most recent open alert in a zone created within `within_minutes`.
+
+        Used by the prediction loop to detect same-source leaks — if another meter
+        in the same zone was already flagged recently, the new detection is likely
+        the same pipe rupture propagating hydraulically, not a separate leak.
+        """
+        df = self._query_to_df('''
+            SELECT id, meter_id, severity, created_at
+            FROM alerts
+            WHERE zone_id = %s
+              AND status != 'resolved'
+              AND created_at >= NOW() - INTERVAL %s MINUTE
+            ORDER BY created_at DESC
+            LIMIT 1
+        ''', (zone_id, within_minutes))
+        return df.iloc[0].to_dict() if not df.empty else None
+
     def clear_all_alerts(self):
         """Clear all alerts from database (useful for cleaning up false positives)"""
         self._execute("DELETE FROM alerts")
@@ -442,26 +541,19 @@ class MySQLDatabaseManager:
                 (status, alert_id)
             )
     
-    def resolve_alert(self, alert_id: int):
-        """Convenience method to mark an alert as resolved"""
-        self.update_alert_status(alert_id, "resolved")
-    
     def cleanup_old_alerts(self, days: int = 7) -> int:
         """Archive/delete resolved alerts older than specified days"""
         cutoff_date = datetime.now() - timedelta(days=days)
         conn = self._get_conn()
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            DELETE FROM alerts
-            WHERE status = 'resolved'
-            AND resolved_at < %s
-        ''', (cutoff_date,))
-        
-        deleted_count = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        
+        try:
+            cursor.execute(
+                "DELETE FROM alerts WHERE status = 'resolved' AND resolved_at < %s",
+                (cutoff_date,)
+            )
+            deleted_count = cursor.rowcount
+        finally:
+            cursor.close()
         if deleted_count > 0:
             print(f"Cleaned up {deleted_count} resolved alerts older than {days} days")
         return deleted_count
@@ -582,30 +674,44 @@ class MySQLDatabaseManager:
         existing = self._query_to_df("SELECT id FROM teams WHERE name = %s", (name,))
         if not existing.empty:
             return False, "Team name already exists", None
-        
+
+        # Enforce: each field technician can only be in one active team
+        for uid in member_ids:
+            row = self._query_to_df(
+                "SELECT t.name FROM team_members tm "
+                "JOIN teams t ON tm.team_id = t.id "
+                "WHERE tm.user_id = %s AND t.status = 'active' LIMIT 1",
+                (uid,)
+            )
+            if not row.empty:
+                return False, (
+                    f"Technician {uid} is already assigned to team '{row.iloc[0]['name']}'. "
+                    "A Field Technician can only be in one team at a time."
+                ), None
+
         try:
             conn = self._get_conn()
+            conn.autocommit = False
             cursor = conn.cursor()
-            
-            # Insert team
-            cursor.execute(
-                "INSERT INTO teams (name, description, created_by) VALUES (%s, %s, %s)",
-                (name, description, created_by)
-            )
-            team_id = cursor.lastrowid
-            
-            # Insert team members
-            for member_id in member_ids:
+            try:
                 cursor.execute(
-                    "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
-                    (team_id, member_id, created_by)
+                    "INSERT INTO teams (name, description, created_by) VALUES (%s, %s, %s)",
+                    (name, description, created_by)
                 )
-            
-            conn.commit()
-            cursor.close()
-            
-            return True, f"Team '{name}' created successfully", team_id
-            
+                team_id = cursor.lastrowid
+                for member_id in member_ids:
+                    cursor.execute(
+                        "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
+                        (team_id, member_id, created_by)
+                    )
+                conn.commit()
+                return True, f"Team '{name}' created successfully", team_id
+            except mysql.connector.Error:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+                conn.autocommit = True
         except mysql.connector.Error as e:
             return False, f"Database error: {str(e)}", None
     
@@ -694,32 +800,46 @@ class MySQLDatabaseManager:
             )
             if not existing.empty:
                 return False, "Team name already exists"
-        
+
+        # Enforce: newly-added members cannot already be in another active team
+        current_member_ids = {m['user_id'] for m in team['members']}
+        for uid in member_ids:
+            if uid not in current_member_ids:
+                row = self._query_to_df(
+                    "SELECT t.name FROM team_members tm "
+                    "JOIN teams t ON tm.team_id = t.id "
+                    "WHERE tm.user_id = %s AND t.status = 'active' LIMIT 1",
+                    (uid,)
+                )
+                if not row.empty:
+                    return False, (
+                        f"Technician {uid} is already assigned to team '{row.iloc[0]['name']}'. "
+                        "A Field Technician can only be in one team at a time."
+                    )
+
         try:
             conn = self._get_conn()
+            conn.autocommit = False
             cursor = conn.cursor()
-            
-            # Update team details
-            cursor.execute(
-                "UPDATE teams SET name = %s, description = %s WHERE id = %s",
-                (name, description, team_id)
-            )
-            
-            # Remove all existing members
-            cursor.execute("DELETE FROM team_members WHERE team_id = %s", (team_id,))
-            
-            # Add new members
-            for member_id in member_ids:
+            try:
                 cursor.execute(
-                    "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
-                    (team_id, member_id, updated_by)
+                    "UPDATE teams SET name = %s, description = %s WHERE id = %s",
+                    (name, description, team_id)
                 )
-            
-            conn.commit()
-            cursor.close()
-            
-            return True, f"Team '{name}' updated successfully"
-            
+                cursor.execute("DELETE FROM team_members WHERE team_id = %s", (team_id,))
+                for member_id in member_ids:
+                    cursor.execute(
+                        "INSERT INTO team_members (team_id, user_id, added_by) VALUES (%s, %s, %s)",
+                        (team_id, member_id, updated_by)
+                    )
+                conn.commit()
+                return True, f"Team '{name}' updated successfully"
+            except mysql.connector.Error:
+                conn.rollback()
+                raise
+            finally:
+                cursor.close()
+                conn.autocommit = True
         except mysql.connector.Error as e:
             return False, f"Database error: {str(e)}"
     
@@ -804,12 +924,27 @@ class MySQLDatabaseManager:
             return False, "Alert not found"
         
         try:
+            meter_id = alert_df.iloc[0].get("meter_id") if "meter_id" in alert_df.columns else None
+            if not meter_id:
+                full = self._query_to_df("SELECT meter_id FROM alerts WHERE id = %s", (alert_id,))
+                meter_id = full.iloc[0]["meter_id"] if not full.empty else None
+
             self._execute(
                 "UPDATE alerts SET status = 'resolved', resolved_at = %s, resolved_by = %s WHERE id = %s",
                 (datetime.now(), resolved_by, alert_id)
             )
+            # Clear the leak flag so the meter disappears from the leak queues immediately
+            if meter_id:
+                self.store_leak_prediction(
+                    meter_id=meter_id,
+                    timestamp=datetime.now(),
+                    confidence=0.0,
+                    leak_detected=False,
+                    leak_type="none",
+                    features="{}",
+                )
             return True, "Alert marked as resolved"
-            
+
         except mysql.connector.Error as e:
             return False, f"Database error: {str(e)}"
     
@@ -839,6 +974,23 @@ class MySQLDatabaseManager:
             ORDER BY a.created_at DESC
         ''', (team_id, since))
     
+    def get_last_assigned_team_for_zone(self, zone_id: str) -> Optional[Dict]:
+        """Return the most recently assigned active team for a given zone."""
+        df = self._query_to_df("""
+            SELECT t.id, t.name
+            FROM alerts a
+            JOIN teams t ON a.team_id = t.id
+            WHERE a.zone_id = %s
+              AND a.team_id IS NOT NULL
+              AND t.status = 'active'
+            ORDER BY a.created_at DESC
+            LIMIT 1
+        """, (zone_id,))
+        if df.empty:
+            return None
+        row = df.iloc[0]
+        return {'id': int(row['id']), 'name': str(row['name'])}
+
     def get_unassigned_alerts(self, hours: int = 24) -> pd.DataFrame:
         """Get all alerts without team assignment (status='new')"""
         since = datetime.now() - timedelta(hours=hours)
@@ -912,6 +1064,55 @@ class MySQLDatabaseManager:
             ORDER BY active_alerts DESC, t.name
         ''')
     
+    def get_zone_leak_summary(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Zone-level leak aggregation for the NRW session summary report."""
+        return self._query_to_df("""
+            SELECT
+                z.zone_id,
+                z.name                                                          AS zone_name,
+                z.region,
+                COUNT(DISTINCT a.id)                                            AS total_leaks,
+                SUM(CASE WHEN a.status = 'resolved' THEN 1 ELSE 0 END)         AS resolved,
+                SUM(CASE WHEN a.status != 'resolved' THEN 1 ELSE 0 END)        AS active,
+                SUM(CASE WHEN a.severity = 'critical' THEN 1 ELSE 0 END)       AS critical,
+                SUM(CASE WHEN a.severity = 'warning'  THEN 1 ELSE 0 END)       AS warning,
+                SUM(CASE WHEN a.severity = 'normal'   THEN 1 ELSE 0 END)       AS suspected,
+                GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR ' | ')  AS assigned_teams
+            FROM alerts a
+            JOIN zones z ON a.zone_id = z.zone_id
+            LEFT JOIN teams t ON a.team_id = t.id
+            WHERE a.created_at BETWEEN %s AND %s
+            GROUP BY z.zone_id, z.name, z.region
+            ORDER BY total_leaks DESC
+        """, (start_dt, end_dt))
+
+    def get_zone_leak_detail(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Individual alert rows with zone + team assignment for the session report."""
+        return self._query_to_df("""
+            SELECT
+                z.name                                                                      AS zone_name,
+                a.id                                                                        AS alert_id,
+                a.meter_id,
+                a.severity,
+                a.status,
+                a.title,
+                a.created_at,
+                a.resolved_at,
+                ROUND(TIMESTAMPDIFF(MINUTE, a.created_at,
+                      COALESCE(a.resolved_at, NOW())) / 60.0, 1)                           AS response_hrs,
+                t.name                                                                      AS team_name,
+                GROUP_CONCAT(DISTINCT u.name ORDER BY u.name SEPARATOR ', ')               AS team_members
+            FROM alerts a
+            JOIN zones z ON a.zone_id = z.zone_id
+            LEFT JOIN teams t ON a.team_id = t.id
+            LEFT JOIN team_members tm ON t.id = tm.team_id
+            LEFT JOIN users u ON tm.user_id = u.user_id
+            WHERE a.created_at BETWEEN %s AND %s
+            GROUP BY z.name, a.id, a.meter_id, a.severity, a.status,
+                     a.title, a.created_at, a.resolved_at, t.name
+            ORDER BY z.name, a.created_at DESC
+        """, (start_dt, end_dt))
+
     def get_alerts_for_user_teams(self, user_id: str, status: Optional[str] = None, hours: int = 24) -> pd.DataFrame:
         """
         Get all alerts assigned to teams that the user belongs to
@@ -940,6 +1141,100 @@ class MySQLDatabaseManager:
         
         return self._query_to_df(query, tuple(params))
     
+    # === DATA MANAGEMENT OPERATIONS ===
+
+    def get_dynamic_data_counts(self) -> dict:
+        """Return row counts for sensor_readings, leak_predictions, and alerts by status."""
+        readings = self._query_to_df("SELECT COUNT(*) AS cnt FROM sensor_readings")
+        predictions = self._query_to_df("SELECT COUNT(*) AS cnt FROM leak_predictions")
+        alerts_all = self._query_to_df("SELECT status, COUNT(*) AS cnt FROM alerts GROUP BY status")
+        oldest_r = self._query_to_df("SELECT MIN(timestamp) AS ts FROM sensor_readings")
+        oldest_p = self._query_to_df("SELECT MIN(timestamp) AS ts FROM leak_predictions")
+
+        alert_counts = {}
+        if not alerts_all.empty:
+            for _, row in alerts_all.iterrows():
+                alert_counts[row['status']] = int(row['cnt'])
+
+        return {
+            'sensor_readings': int(readings.iloc[0]['cnt']) if not readings.empty else 0,
+            'predictions': int(predictions.iloc[0]['cnt']) if not predictions.empty else 0,
+            'alerts_new': alert_counts.get('new', 0),
+            'alerts_assigned': alert_counts.get('assigned', 0),
+            'alerts_resolved': alert_counts.get('resolved', 0),
+            'oldest_reading': oldest_r.iloc[0]['ts'] if not oldest_r.empty else None,
+            'oldest_prediction': oldest_p.iloc[0]['ts'] if not oldest_p.empty else None,
+        }
+
+    def clear_sensor_readings(self, older_than_hours: int = None) -> tuple[bool, str, int]:
+        """Delete sensor readings. Pass older_than_hours to limit scope."""
+        try:
+            if older_than_hours:
+                cutoff = datetime.now() - timedelta(hours=older_than_hours)
+                before = self._query_to_df(
+                    "SELECT COUNT(*) AS cnt FROM sensor_readings WHERE timestamp < %s", (cutoff,)
+                )
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM sensor_readings WHERE timestamp < %s", (cutoff,))
+            else:
+                before = self._query_to_df("SELECT COUNT(*) AS cnt FROM sensor_readings")
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM sensor_readings")
+            return True, f"Cleared {count} sensor reading(s).", count
+        except Exception as e:
+            return False, f"Error: {e}", 0
+
+    def clear_leak_predictions(self, older_than_hours: int = None) -> tuple[bool, str, int]:
+        """Delete leak predictions. Pass older_than_hours to limit scope."""
+        try:
+            if older_than_hours:
+                cutoff = datetime.now() - timedelta(hours=older_than_hours)
+                before = self._query_to_df(
+                    "SELECT COUNT(*) AS cnt FROM leak_predictions WHERE timestamp < %s", (cutoff,)
+                )
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM leak_predictions WHERE timestamp < %s", (cutoff,))
+            else:
+                before = self._query_to_df("SELECT COUNT(*) AS cnt FROM leak_predictions")
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM leak_predictions")
+            return True, f"Cleared {count} prediction(s).", count
+        except Exception as e:
+            return False, f"Error: {e}", 0
+
+    def clear_alerts(self, scope: str = "resolved") -> tuple[bool, str, int]:
+        """Delete alerts. scope: 'resolved' | 'all'."""
+        try:
+            if scope == "resolved":
+                before = self._query_to_df(
+                    "SELECT COUNT(*) AS cnt FROM alerts WHERE status = 'resolved'"
+                )
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM alerts WHERE status = 'resolved'")
+            else:
+                before = self._query_to_df("SELECT COUNT(*) AS cnt FROM alerts")
+                count = int(before.iloc[0]['cnt']) if not before.empty else 0
+                self._execute("DELETE FROM alerts")
+            return True, f"Cleared {count} alert(s).", count
+        except Exception as e:
+            return False, f"Error: {e}", 0
+
+    def clear_all_dynamic_data(self) -> tuple[bool, str]:
+        """Wipe sensor_readings, leak_predictions, and alerts tables entirely."""
+        try:
+            r = self._query_to_df("SELECT COUNT(*) AS cnt FROM sensor_readings")
+            p = self._query_to_df("SELECT COUNT(*) AS cnt FROM leak_predictions")
+            a = self._query_to_df("SELECT COUNT(*) AS cnt FROM alerts")
+            n_r = int(r.iloc[0]['cnt']) if not r.empty else 0
+            n_p = int(p.iloc[0]['cnt']) if not p.empty else 0
+            n_a = int(a.iloc[0]['cnt']) if not a.empty else 0
+            self._execute("DELETE FROM alerts")
+            self._execute("DELETE FROM leak_predictions")
+            self._execute("DELETE FROM sensor_readings")
+            return True, f"Cleared {n_r} readings, {n_p} predictions, {n_a} alerts."
+        except Exception as e:
+            return False, f"Error: {e}"
+
     # === USER MANAGEMENT OPERATIONS ===
     
     def get_all_users(self) -> pd.DataFrame:

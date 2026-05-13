@@ -10,6 +10,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.mysql_database_manager import db_manager
+from page_components.ui import show_glowing_table
 from backend.rbac import (
     has_permission,
     Permissions,
@@ -47,21 +48,19 @@ def show_users_by_status(status: str):
     """Display users filtered by status (active or inactive)"""
     status_label = "Active" if status == "active" else "Deactivated"
     st.subheader(f"{status_label} Users")
-    
+
     users_df = db_manager.get_all_users()
-    
+
     if users_df.empty:
         st.info("No users found.")
         return
-    
-    # Filter by status
-    filtered_df = users_df[users_df['status'] == status]
-    
+
+    filtered_df = users_df[users_df['status'] == status].copy()
+
     if filtered_df.empty:
         st.info(f"No {status_label.lower()} users found.")
         return
-    
-    # Filter options
+
     col1, col2 = st.columns(2)
     with col1:
         role_filter = st.selectbox(
@@ -69,99 +68,107 @@ def show_users_by_status(status: str):
             ["All"] + Roles.ALL_ROLES,
             key=f"role_filter_{status}"
         )
-    with col2:
-        st.write("")  # Spacer
-    
-    # Apply role filter
+
     if role_filter != "All":
         filtered_df = filtered_df[filtered_df['role'] == role_filter]
-    
+
     st.write(f"**Total {status_label} Users:** {len(filtered_df)}")
-    
-    # Display users as cards
-    for idx, user in filtered_df.iterrows():
-        with st.expander(f"{user['name']} ({user['user_id']}) - {user['role']}", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.write(f"**User ID:** {user['user_id']}")
-                st.write(f"**Email:** {user['email']}")
-                st.write(f"**Role:** {user['role']}")
-                st.write(f"**Status:** {user['status'].upper()}")
-                st.write(f"**Created:** {user['created_at'].strftime('%Y-%m-%d %H:%M') if pd.notna(user['created_at']) else 'N/A'}")
-                if pd.notna(user['last_login']):
-                    st.write(f"**Last Login:** {user['last_login'].strftime('%Y-%m-%d %H:%M')}")
-            
-            with col2:
-                # Management buttons
-                if st.button("Edit", key=f"edit_user_{status}_{user['user_id']}"):
-                    st.session_state[f'editing_user_{user["user_id"]}'] = True
+
+    # Display as a table
+    display_df = filtered_df[['user_id', 'name', 'role', 'email', 'status']].copy()
+    display_df['created_at'] = filtered_df['created_at'].apply(
+        lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) else 'N/A'
+    )
+    display_df = display_df.rename(columns={
+        'user_id': 'User ID', 'name': 'Name', 'role': 'Role',
+        'email': 'Email', 'status': 'Status', 'created_at': 'Created'
+    })
+    show_glowing_table(display_df)
+
+    st.markdown("---")
+    st.subheader("Manage User")
+
+    user_options = [f"{row['name']} ({row['user_id']})" for _, row in filtered_df.iterrows()]
+    if not user_options:
+        return
+
+    selected_label = st.selectbox("Select user", user_options, key=f"select_user_{status}")
+    selected_id = selected_label.split("(")[-1].rstrip(")")
+    user = filtered_df[filtered_df['user_id'] == selected_id].iloc[0]
+
+    col_info, col_actions = st.columns([3, 1])
+    with col_info:
+        st.write(f"**User ID:** {user['user_id']}")
+        st.write(f"**Email:** {user['email']}")
+        st.write(f"**Role:** {user['role']}")
+        st.write(f"**Status:** {user['status'].upper()}")
+        st.write(f"**Created:** {user['created_at'].strftime('%Y-%m-%d %H:%M') if pd.notna(user['created_at']) else 'N/A'}")
+        if pd.notna(user['last_login']):
+            st.write(f"**Last Login:** {user['last_login'].strftime('%Y-%m-%d %H:%M')}")
+
+    with col_actions:
+        if st.button("Edit", key=f"edit_user_{status}_{user['user_id']}"):
+            st.session_state[f'editing_user_{user["user_id"]}'] = True
+            st.rerun()
+
+        if st.button("Change Role", key=f"role_user_{status}_{user['user_id']}"):
+            st.session_state[f'changing_role_{user["user_id"]}'] = True
+            st.rerun()
+
+        if status == 'active':
+            if st.button("Deactivate", key=f"delete_user_{status}_{user['user_id']}"):
+                st.session_state[f'confirm_delete_{user["user_id"]}'] = True
+                st.rerun()
+        else:
+            if st.button("Reactivate", key=f"reactivate_user_{status}_{user['user_id']}"):
+                st.session_state[f'confirm_reactivate_{user["user_id"]}'] = True
+                st.rerun()
+
+    if st.session_state.get(f'editing_user_{user["user_id"]}', False):
+        show_edit_user_form(user)
+
+    if st.session_state.get(f'changing_role_{user["user_id"]}', False):
+        show_change_role_form(user)
+
+    if st.session_state.get(f'confirm_delete_{user["user_id"]}', False):
+        st.warning(f"Are you sure you want to deactivate user **{user['name']}**?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Yes, Deactivate", key=f"confirm_yes_{status}_{user['user_id']}"):
+                success, msg = db_manager.delete_user(user['user_id'])
+                if success:
+                    st.success(msg)
+                    st.session_state.pop(f'confirm_delete_{user["user_id"]}', None)
                     st.rerun()
-                
-                if st.button("Change Role", key=f"role_user_{status}_{user['user_id']}"):
-                    st.session_state[f'changing_role_{user["user_id"]}'] = True
-                    st.rerun()
-                
-                if status == 'active':
-                    if st.button("Deactivate", key=f"delete_user_{status}_{user['user_id']}"):
-                        st.session_state[f'confirm_delete_{user["user_id"]}'] = True
-                        st.rerun()
                 else:
-                    # For inactive users, show reactivate button
-                    if st.button("Reactivate", key=f"reactivate_user_{status}_{user['user_id']}"):
-                        st.session_state[f'confirm_reactivate_{user["user_id"]}'] = True
-                        st.rerun()
-            
-            # Edit form (inline)
-            if st.session_state.get(f'editing_user_{user["user_id"]}', False):
-                show_edit_user_form(user)
-            
-            # Change role form (inline)
-            if st.session_state.get(f'changing_role_{user["user_id"]}', False):
-                show_change_role_form(user)
-            
-            # Delete confirmation
-            if st.session_state.get(f'confirm_delete_{user["user_id"]}', False):
-                st.warning(f"Are you sure you want to deactivate user **{user['name']}**?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("Yes, Deactivate", key=f"confirm_yes_{status}_{user['user_id']}"):
-                        success, msg = db_manager.delete_user(user['user_id'])
-                        if success:
-                            st.success(msg)
-                            st.session_state.pop(f'confirm_delete_{user["user_id"]}', None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("Cancel", key=f"confirm_no_{status}_{user['user_id']}"):
-                        st.session_state.pop(f'confirm_delete_{user["user_id"]}', None)
-                        st.rerun()
-            
-            # Reactivate confirmation
-            if st.session_state.get(f'confirm_reactivate_{user["user_id"]}', False):
-                st.info(f"Reactivate user **{user['name']}**?")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("Yes, Reactivate", key=f"confirm_reactivate_yes_{status}_{user['user_id']}"):
-                        # Reactivate by updating status to active
-                        success, msg = db_manager.update_user(
-                            user_id=user['user_id'],
-                            email=user['email'],
-                            name=user['name'],
-                            role=user['role'],
-                            status='active'
-                        )
-                        if success:
-                            st.success(f"User '{user['name']}' reactivated successfully")
-                            st.session_state.pop(f'confirm_reactivate_{user["user_id"]}', None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("Cancel", key=f"confirm_reactivate_no_{status}_{user['user_id']}"):
-                        st.session_state.pop(f'confirm_reactivate_{user["user_id"]}', None)
-                        st.rerun()
+                    st.error(msg)
+        with col_no:
+            if st.button("Cancel", key=f"confirm_no_{status}_{user['user_id']}"):
+                st.session_state.pop(f'confirm_delete_{user["user_id"]}', None)
+                st.rerun()
+
+    if st.session_state.get(f'confirm_reactivate_{user["user_id"]}', False):
+        st.info(f"Reactivate user **{user['name']}**?")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Yes, Reactivate", key=f"confirm_reactivate_yes_{status}_{user['user_id']}"):
+                success, msg = db_manager.update_user(
+                    user_id=user['user_id'],
+                    email=user['email'],
+                    name=user['name'],
+                    role=user['role'],
+                    status='active'
+                )
+                if success:
+                    st.success(f"User '{user['name']}' reactivated successfully")
+                    st.session_state.pop(f'confirm_reactivate_{user["user_id"]}', None)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with col_no:
+            if st.button("Cancel", key=f"confirm_reactivate_no_{status}_{user['user_id']}"):
+                st.session_state.pop(f'confirm_reactivate_{user["user_id"]}', None)
+                st.rerun()
 
 
 def show_all_users():

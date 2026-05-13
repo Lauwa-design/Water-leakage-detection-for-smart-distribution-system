@@ -1,205 +1,206 @@
-"""Overview page - quick operational summary."""
-
-from __future__ import annotations
+import html as _html
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from backend.mysql_database_manager import db_manager
 from page_components.data_utils import (
     build_meter_snapshot,
-    format_datetime,
     get_cached_data,
     get_service_states,
     latest_timestamp,
+    format_datetime,
     load_static_data,
 )
-from page_components.ui import empty_state, metric_card, page_header, render_status_row, section_header
+from page_components.ui import render_metric, render_status_pill, section_header, show_glowing_table
 
 
-def show_overview() -> None:
-    """Render the operational overview page."""
-    page_header(
-        "Overview",
-        "At-a-glance monitoring for the current water network state.",
-    )
-
-    # Load static data first (fast - zones, meters)
+def show_overview():
+    # ── Load data ─────────────────────────────────────────────────────────────
+    data        = get_cached_data(hours=24)
     static_data = load_static_data()
-    
-    # Load dynamic data with session state caching (ultra-fast on page switches)
-    data = get_cached_data(hours=24)
-    
-    stats = db_manager.get_dashboard_stats()
-    snapshot = build_meter_snapshot(
-        static_data["meters"],
-        static_data["zones"],
-        data["readings"],
-        data["predictions"],
-        data["alerts"],
+    snapshot    = build_meter_snapshot(
+        static_data["meters"], static_data["zones"],
+        data["readings"], data["predictions"], data["alerts"],
     )
-
-    latest_reading = latest_timestamp(data["readings"], "timestamp")
+    service_states    = get_service_states()
+    latest_reading    = latest_timestamp(data["readings"],    "timestamp")
     latest_prediction = latest_timestamp(data["predictions"], "timestamp")
-    service_items = [(state.name, state.tone) for state in get_service_states()]
-    render_status_row(service_items)
 
-    # Calculate leak metrics from snapshot (consistent with Leak Analysis page)
-    if not snapshot.empty:
-        # Get unique meters with leaks (to avoid counting same meter multiple times)
-        unique_leaks = snapshot[snapshot["leak_detected"] == True].drop_duplicates("meter_id")
-        total_detected = len(unique_leaks)
-        critical_count = len(unique_leaks[unique_leaks["severity"] == "critical"])
-        warning_count = len(unique_leaks[unique_leaks["severity"] == "warning"])
-        # High-confidence leaks (leak_detected=True AND confidence >= 85%)
-        high_conf_leaks = unique_leaks[unique_leaks["confidence"] >= 0.85]
-        high_conf = len(high_conf_leaks)
-    else:
-        total_detected = 0
-        critical_count = 0
-        warning_count = 0
-        high_conf = 0
+    total_meters = len(static_data["meters"]) if not static_data["meters"].empty else 0
+    total_zones  = len(static_data["zones"])  if not static_data["zones"].empty  else 0
 
-    metric_columns = st.columns(4)
-    with metric_columns[0]:
-        metric_card("Detected Leaks", str(total_detected), "Meters with leak_detected=True", "danger")
-    with metric_columns[1]:
-        metric_card("Critical", str(critical_count), "Meters with ≥95% confidence", "danger")
-    with metric_columns[2]:
-        metric_card("Warning", str(warning_count), "Meters with 85-94% confidence", "warning")
-    with metric_columns[3]:
-        metric_card("High Confidence", str(high_conf), "Meters with ≥85% confidence", "neutral")
+    # Query all open alerts directly — no time window so alerts older than 24 h
+    # (still unresolved) are counted correctly.
+    _open_df = db_manager._query_to_df(
+        "SELECT COUNT(*) AS n, COUNT(DISTINCT meter_id) AS meters "
+        "FROM alerts WHERE status != 'resolved'"
+    )
+    active_alerts  = int(_open_df.iloc[0]["n"])      if not _open_df.empty else 0
+    total_detected = int(_open_df.iloc[0]["meters"]) if not _open_df.empty else 0
 
-    # Summary stats from all pages
-    st.markdown("---")
-    summary_cols = st.columns(5)
-    with summary_cols[0]:
-        st.metric("Total Meters", len(static_data["meters"]) if not static_data["meters"].empty else 0)
-    with summary_cols[1]:
-        st.metric("Total Zones", len(static_data["zones"]) if not static_data["zones"].empty else 0)
-    with summary_cols[2]:
-        active_alerts = len(data["alerts"][data["alerts"]["status"] == "active"]) if not data["alerts"].empty else 0
-        st.metric("Active Alerts", active_alerts)
-    with summary_cols[3]:
-        total_readings = len(data["readings"]) if not data["readings"].empty else 0
-        st.metric("Readings (24h)", total_readings)
-    with summary_cols[4]:
-        total_predictions = len(data["predictions"]) if not data["predictions"].empty else 0
-        st.metric("Predictions", total_predictions)
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.title("Overview")
+    st.caption(
+        f"Real-time telemetry and predictive leak analysis — "
+        f"{total_meters} active smart meters across {total_zones} zones."
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    col_left, col_right = st.columns([1.5, 1])
+    # ── KPI row ───────────────────────────────────────────────────────────────
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        render_metric("Total Meters",  str(total_meters),   "text-cyan")
+    with m2:
+        render_metric("Active Leaks",  str(total_detected), "text-emerald")
+    with m3:
+        render_metric("Total Alerts",  str(active_alerts),  "text-amber")
+    with m4:
+        render_metric("Zones",         str(total_zones),    "text-cyan")
 
-    with col_left:
-        section_header("Network trend", "Recent average flow and pressure from incoming smart meter readings.")
-        readings = data["readings"].copy()
-        if readings.empty:
-            empty_state("No recent meter readings are available yet.")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Network trend + System heartbeat ──────────────────────────────────────
+    col_trend, col_heart = st.columns([2, 1], gap="medium")
+
+    with col_trend:
+        section_header("Network Trend", "Hourly avg flow vs pressure across the network")
+        if data["readings"].empty:
+            st.info("No meter readings available yet.")
         else:
-            readings["hour_bucket"] = readings["timestamp"].dt.floor("h")
-            trend = readings.groupby("hour_bucket").agg(
-                avg_flow=("flow_rate", "mean"),
-                avg_pressure=("pressure", "mean"),
-            ).reset_index()
-            fig = px.line(
-                trend,
-                x="hour_bucket",
-                y=["avg_flow", "avg_pressure"],
-                markers=True,
-                labels={"value": "Average value", "variable": "Signal", "hour_bucket": "Time"},
+            readings = data["readings"].copy()
+            readings["hour"] = readings["timestamp"].dt.floor("h")
+            trend = (
+                readings.groupby("hour")
+                .agg(Flow=("flow_rate", "mean"), Pressure=("pressure", "mean"))
+                .reset_index()
+                .tail(24)
             )
+            _gc = "rgba(255,255,255,0.04)"
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=trend["hour"], y=trend["Flow"],
+                name="Avg Flow",
+                mode="lines",
+                line=dict(color="#22c55e", width=2.5),
+                fill="tozeroy", fillcolor="rgba(34,197,94,0.07)",
+                yaxis="y1",
+                hovertemplate="<b>%{x|%H:%M}</b><br>Flow: %{y:.3f} m³/h<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter(
+                x=trend["hour"], y=trend["Pressure"],
+                name="Avg Pressure",
+                mode="lines",
+                line=dict(color="#3b82f6", width=2.5),
+                yaxis="y2",
+                hovertemplate="<b>%{x|%H:%M}</b><br>Pressure: %{y:.1f} PSI<extra></extra>",
+            ))
             fig.update_layout(
-                margin=dict(l=10, r=10, t=20, b=10),
-                legend_title_text="",
                 paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(255,255,255,0.65)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font_color="#94a3b8",
+                height=270,
+                margin=dict(l=55, r=55, t=10, b=35),
+                legend=dict(
+                    orientation="h", x=0.5, xanchor="center", y=1.14,
+                    font=dict(size=10, color="#94a3b8"),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                xaxis=dict(
+                    showgrid=True, gridcolor=_gc,
+                    tickformat="%H:%M",
+                    title=dict(text="Time (last 24 h)", font=dict(size=9, color="#475569")),
+                    tickfont=dict(size=9, color="#64748b"),
+                    zeroline=False,
+                ),
+                yaxis=dict(
+                    title=dict(text="Flow (m³/h)", font=dict(size=9, color="#22c55e")),
+                    tickfont=dict(size=9, color="#22c55e"),
+                    showgrid=True, gridcolor=_gc,
+                    zeroline=False,
+                ),
+                yaxis2=dict(
+                    title=dict(text="Pressure (PSI)", font=dict(size=9, color="#3b82f6")),
+                    tickfont=dict(size=9, color="#3b82f6"),
+                    overlaying="y", side="right",
+                    showgrid=False, zeroline=False,
+                ),
+                hovermode="x unified",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    with col_right:
-        section_header("System heartbeat", "Service readiness and data freshness.")
-        heartbeat = pd.DataFrame(
-            [
-                {
-                    "Service": state.name,
-                    "Status": "Healthy" if state.healthy else "Attention",
-                    "Detail": state.detail,
-                }
-                for state in get_service_states()
-            ]
+    with col_heart:
+        section_header("System Heartbeat", "Service readiness and data freshness")
+        for svc in service_states:
+            c_info, c_stat = st.columns([3, 1])
+            with c_info:
+                st.markdown(
+                    f"<p style='margin:0;font-size:0.75rem;font-weight:700;"
+                    f"text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;'>{_html.escape(svc.name)}</p>"
+                    f"<p style='margin:0 0 4px;font-size:0.78rem;color:#475569;'>{_html.escape(svc.detail)}</p>",
+                    unsafe_allow_html=True,
+                )
+            with c_stat:
+                render_status_pill("Healthy" if svc.healthy else "Needs Attention", is_healthy=svc.healthy)
+            st.divider()
+        st.caption(
+            f"Last reading: {format_datetime(latest_reading)}  \n"
+            f"Last prediction: {format_datetime(latest_prediction)}"
         )
-        st.dataframe(heartbeat, use_container_width=True, hide_index=True)
-        st.caption(f"Latest reading: {format_datetime(latest_reading)}")
-        st.caption(f"Latest prediction: {format_datetime(latest_prediction)}")
 
-    lower_left, lower_right = st.columns([1.25, 1])
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    with lower_left:
-        section_header("Recent alerts", "Newest alerts raised by the prediction loop.")
+    # ── Recent alerts + Priority meters ───────────────────────────────────────
+    col_alerts, col_priority = st.columns([3, 2], gap="medium")
+
+    with col_alerts:
+        section_header("Recent Alerts", "Newest alerts raised by the prediction loop")
         alerts = data["alerts"].copy()
         if alerts.empty:
-            empty_state("No alerts have been generated in the last 24 hours.")
+            st.info("No alerts in the last 24 hours.")
         else:
-            meters = data["meters"][["meter_id", "location"]].copy() if not data["meters"].empty else pd.DataFrame()
-            if not meters.empty and "meter_id" in alerts.columns:
-                alerts = alerts.merge(meters, on="meter_id", how="left")
-            alerts["created_at"] = alerts["created_at"].dt.strftime("%Y-%m-%d %H:%M")
-            display_columns = ["created_at", "severity", "title", "meter_id", "location", "status"]
-            available = [column for column in display_columns if column in alerts.columns]
-            st.dataframe(
-                alerts[available].head(8),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "created_at": "Time",
-                    "severity": "Severity",
-                    "title": "Alert",
-                    "meter_id": "Meter",
-                    "location": "Location",
-                    "status": "Status",
-                },
+            if not data["meters"].empty and "meter_id" in alerts.columns:
+                alerts = alerts.merge(
+                    data["meters"][["meter_id", "location"]], on="meter_id", how="left"
+                )
+            alerts["created_at"] = alerts["created_at"].dt.strftime("%H:%M")
+            cols = [c for c in ["created_at", "severity", "title", "meter_id", "location"] if c in alerts.columns]
+            show_glowing_table(
+                alerts[cols].head(8).rename(columns={
+                    "created_at": "TIME",
+                    "severity":   "SEVERITY",
+                    "title":      "ALERT",
+                    "meter_id":   "METER",
+                    "location":   "LOCATION",
+                })
             )
 
-    with lower_right:
-        section_header("Priority meters", "Meters with the highest current leak confidence.")
+    with col_priority:
+        section_header("Priority Meters", "Meters with highest current leak confidence")
         if snapshot.empty:
-            empty_state("Meter inventory has not been loaded yet.")
+            st.info("Meter inventory not loaded.")
         else:
-            focus = snapshot[["meter_id", "zone", "location", "confidence", "severity", "estimated_loss_l_hr"]].copy()
-            focus["confidence"] = (focus["confidence"] * 100).round(1).astype(str) + "%"
-            focus["estimated_loss_l_hr"] = focus["estimated_loss_l_hr"].round(1)
+            focus = snapshot[["meter_id", "zone", "confidence"]].copy()
+            focus["confidence_pct"] = (focus["confidence"] * 100).round(1)
             st.dataframe(
                 focus.head(8),
-                use_container_width=True,
-                hide_index=True,
+                use_container_width=True, hide_index=True,
                 column_config={
-                    "meter_id": "Meter",
-                    "zone": "Zone",
-                    "location": "Location",
-                    "confidence": "Confidence",
-                    "severity": "Severity",
-                    "estimated_loss_l_hr": "Est. Loss (L/hr)",
+                    "meter_id":       st.column_config.TextColumn("METER",  width="small"),
+                    "zone":           st.column_config.TextColumn("ZONE",   width="small"),
+                    "confidence":     None,
+                    "confidence_pct": st.column_config.ProgressColumn(
+                        "CONFIDENCE", format="%.1f%%", min_value=0, max_value=100,
+                    ),
                 },
             )
 
-    if not snapshot.empty:
-        section_header("Zone summary", "Where attention is concentrated across the network.")
-        zone_summary = snapshot.groupby("zone").agg(
-            meters=("meter_id", "count"),
-            leaks=("leak_detected", "sum"),
-            avg_confidence=("confidence", "mean"),
-        ).reset_index()
-        zone_summary["avg_confidence"] = (zone_summary["avg_confidence"] * 100).round(1)
-        fig_zone = px.bar(
-            zone_summary,
-            x="zone",
-            y="leaks",
-            color="avg_confidence",
-            labels={"zone": "Zone", "leaks": "Detected leaks", "avg_confidence": "Avg confidence (%)"},
-        )
-        fig_zone.update_layout(
-            margin=dict(l=10, r=10, t=20, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(255,255,255,0.65)",
-        )
-        st.plotly_chart(fig_zone, use_container_width=True)
+    # ── Footer strip ──────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    f1, f2, f3 = st.columns([2, 4, 2])
+    with f1:
+        st.caption(f"Meters: {total_meters}  ·  Zones: {total_zones}  ·  Alerts: {active_alerts}")
+    with f3:
+        render_status_pill("System Live", is_healthy=True)

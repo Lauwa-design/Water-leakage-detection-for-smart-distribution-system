@@ -39,10 +39,11 @@ class ReportGenerator:
         # Calculate hours from date range
         hours = int((end_date - start_date).total_seconds() / 3600)
         
-        # Get alerts with team information
+        # One row per alert — use a correlated subquery to fetch the single
+        # most-recent leak prediction for each alert's meter (avoids M×N inflation).
         query = '''
-            SELECT 
-                a.id as alert_id,
+            SELECT
+                a.id          AS alert_id,
                 a.meter_id,
                 a.zone_id,
                 a.severity,
@@ -52,25 +53,32 @@ class ReportGenerator:
                 a.created_at,
                 a.resolved_at,
                 a.resolved_by,
-                t.id as team_id,
-                t.name as team_name,
-                u.name as resolved_by_name,
+                t.id          AS team_id,
+                t.name        AS team_name,
+                u.name        AS resolved_by_name,
                 lp.confidence,
                 lp.leak_detected,
                 lp.leak_type,
-                lp.timestamp as leak_detected_at,
-                m.location as meter_location,
+                lp.timestamp  AS leak_detected_at,
+                m.location    AS meter_location,
                 m.meter_type,
-                z.name as zone_name,
-                z.region as zone_region
+                z.name        AS zone_name,
+                z.region      AS zone_region
             FROM alerts a
-            LEFT JOIN teams t ON a.team_id = t.id
-            LEFT JOIN users u ON a.resolved_by = u.user_id
-            LEFT JOIN leak_predictions lp ON a.meter_id = lp.meter_id 
-                AND lp.timestamp <= a.created_at
+            LEFT JOIN teams t  ON a.team_id      = t.id
+            LEFT JOIN users u  ON a.resolved_by  = u.user_id
+            LEFT JOIN meters m ON a.meter_id      = m.meter_id
+            LEFT JOIN zones  z ON a.zone_id       = z.zone_id
+            LEFT JOIN leak_predictions lp
+                ON  lp.meter_id  = a.meter_id
                 AND lp.leak_detected = 1
-            LEFT JOIN meters m ON a.meter_id = m.meter_id
-            LEFT JOIN zones z ON a.zone_id = z.zone_id
+                AND lp.timestamp = (
+                    SELECT MAX(lp2.timestamp)
+                    FROM   leak_predictions lp2
+                    WHERE  lp2.meter_id     = a.meter_id
+                      AND  lp2.leak_detected = 1
+                      AND  lp2.timestamp    <= a.created_at
+                )
             WHERE a.created_at BETWEEN %s AND %s
         '''
         
@@ -117,28 +125,36 @@ class ReportGenerator:
         Returns:
             DataFrame with leak information
         """
+        # One row per prediction — join to the single most-recent alert per meter
+        # to avoid one prediction matching multiple alerts (M×N inflation).
         query = '''
-            SELECT 
+            SELECT
                 lp.meter_id,
-                lp.timestamp as detected_at,
+                lp.timestamp  AS detected_at,
                 lp.confidence,
                 lp.leak_type,
-                m.location as meter_location,
+                m.location    AS meter_location,
                 m.zone_id,
-                z.name as zone_name,
+                z.name        AS zone_name,
                 z.region,
-                a.id as alert_id,
-                a.status as alert_status,
+                a.id          AS alert_id,
+                a.status      AS alert_status,
                 a.severity,
-                t.name as assigned_team
+                t.name        AS assigned_team
             FROM leak_predictions lp
             LEFT JOIN meters m ON lp.meter_id = m.meter_id
-            LEFT JOIN zones z ON m.zone_id = z.zone_id
-            LEFT JOIN alerts a ON lp.meter_id = a.meter_id 
-                AND a.created_at >= lp.timestamp
+            LEFT JOIN zones  z ON m.zone_id   = z.zone_id
+            LEFT JOIN alerts a
+                ON  a.meter_id = lp.meter_id
+                AND a.id = (
+                    SELECT a2.id FROM alerts a2
+                    WHERE  a2.meter_id = lp.meter_id
+                    ORDER BY a2.created_at DESC
+                    LIMIT 1
+                )
             LEFT JOIN teams t ON a.team_id = t.id
             WHERE lp.leak_detected = 1
-                AND lp.timestamp BETWEEN %s AND %s
+              AND lp.timestamp BETWEEN %s AND %s
         '''
         
         params = [start_date, end_date]

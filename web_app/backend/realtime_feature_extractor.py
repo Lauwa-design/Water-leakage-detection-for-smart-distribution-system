@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -81,15 +81,43 @@ class RealtimeFeatureExtractor:
             "flow_trend": flow_trend,
         }
 
-    def extract_features(self, meter_id: str) -> Dict[str, float]:
-        """Extract scenario-level features (binary + multiclass columns when possible)."""
+    # Minimum number of readings required before we'll trust a prediction.
+    # Below this threshold, features are too sparse and the model returns a
+    # spurious constant output (observed: 0.61 for all-zero feature vectors).
+    MIN_READINGS = 10
+
+    def extract_features(self, meter_id: str) -> Optional[Dict[str, float]]:
+        """Extract scenario-level features (binary + multiclass columns when possible).
+
+        Returns None when there are insufficient readings to produce a reliable
+        feature vector — callers must skip the prediction in that case.
+
+        Uses a 24-hour primary window so night_flow_ratio and mnf are computed
+        from a full day/night cycle — matching the scenario-level semantics the
+        model was trained on.  Falls back to 12 h if the full day is too sparse.
+        """
         from backend.mysql_database_manager import db_manager
 
         readings = db_manager.get_sensor_readings(meter_id=meter_id, hours=24)
-        if readings.empty or len(readings) < 3:
-            return self._get_default_features()
+        if readings.empty or len(readings) < self.MIN_READINGS:
+            readings = db_manager.get_sensor_readings(meter_id=meter_id, hours=12)
+        if readings.empty or len(readings) < self.MIN_READINGS:
+            return None
 
         readings = readings.sort_values("timestamp").copy()
+
+        # Require at least some night readings so night_flow_ratio is meaningful.
+        # Without them the feature is 0 for every meter, which is out-of-distribution
+        # for the model and produces a spurious ~0.6 probability for all meters.
+        timestamps = readings["timestamp"]
+        if hasattr(timestamps.dtype, "tz") and timestamps.dtype.tz is not None:
+            hours_col = timestamps.dt.tz_convert(None).dt.hour
+        else:
+            hours_col = timestamps.dt.hour
+        has_night = hours_col.between(0, 5).any()
+        if not has_night:
+            return None
+
         return self._extract_live_features(readings)
 
     def _safe_correlation(self, series1: pd.Series, series2: pd.Series) -> float:

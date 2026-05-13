@@ -27,5 +27,5 @@
     "pressure_cv",
     "flow_late_vs_early_rel"
   ],
-  "binary_probability_threshold": 0.49
+  "binary_probability_threshold": 0.72
 }

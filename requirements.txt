@@ -25,6 +25,9 @@ python-dotenv>=1.0.0
 # Authentication
 bcrypt>=4.0.0
 
+# PDF generation
+fpdf2>=2.7.0
+
 # Standard Library (usually pre-installed)
 # pathlib - built-in
 # json - built-in  

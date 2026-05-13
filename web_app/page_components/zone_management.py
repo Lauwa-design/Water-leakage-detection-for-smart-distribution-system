@@ -78,61 +78,69 @@ def show_all_zones():
         filtered_df = filtered_df[filtered_df['status'] == status_filter]
     
     st.write(f"**Total Zones:** {len(filtered_df)}")
-    
-    # Display zones as cards
-    for idx, zone in filtered_df.iterrows():
-        with st.expander(f"{zone['zone_id']} - {zone['name']}", expanded=False):
-            col1, col2 = st.columns([3, 1])
-            
-            with col1:
-                st.write(f"**Zone ID:** {zone['zone_id']}")
-                st.write(f"**Name:** {zone['name']}")
-                st.write(f"**Region:** {zone['region']}")
-                st.write(f"**Type:** {zone['type']}")
-                st.write(f"**Status:** {zone['status'].upper()}")
-                st.write(f"**Estimated Connections:** {zone['estimated_connections']}")
-                st.write(f"**Description:** {zone['description'] or 'N/A'}")
-                if pd.notna(zone.get('created_at')):
-                    st.write(f"**Created:** {zone['created_at'].strftime('%Y-%m-%d %H:%M')}")
-                
-                # Show meter count
-                meters_df = db_manager.get_meters(zone['zone_id'])
-                active_meters = len(meters_df[meters_df['status'] == 'active']) if not meters_df.empty else 0
-                st.write(f"**Active Meters:** {active_meters}")
-            
-            with col2:
-                # Management buttons
-                if st.button("Edit", key=f"edit_zone_{zone['zone_id']}"):
-                    st.session_state[f'editing_zone_{zone["zone_id"]}'] = True
+
+    display_df = filtered_df[['zone_id', 'name', 'region', 'type', 'status', 'estimated_connections']].copy()
+    display_df = display_df.rename(columns={
+        'zone_id': 'Zone ID', 'name': 'Name', 'region': 'Region',
+        'type': 'Type', 'status': 'Status', 'estimated_connections': 'Connections'
+    })
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Manage Zone")
+
+    zone_options = [f"{row['zone_id']} - {row['name']}" for _, row in filtered_df.iterrows()]
+    if not zone_options:
+        return
+
+    selected_label = st.selectbox("Select zone", zone_options, key="select_zone")
+    selected_id = selected_label.split(" - ")[0]
+    zone = filtered_df[filtered_df['zone_id'] == selected_id].iloc[0]
+
+    col_info, col_actions = st.columns([3, 1])
+    with col_info:
+        st.write(f"**Zone ID:** {zone['zone_id']}")
+        st.write(f"**Name:** {zone['name']}")
+        st.write(f"**Region:** {zone['region']}")
+        st.write(f"**Type:** {zone['type']}")
+        st.write(f"**Status:** {zone['status'].upper()}")
+        st.write(f"**Estimated Connections:** {zone['estimated_connections']}")
+        st.write(f"**Description:** {zone['description'] or 'N/A'}")
+        if pd.notna(zone.get('created_at')):
+            st.write(f"**Created:** {zone['created_at'].strftime('%Y-%m-%d %H:%M')}")
+        meters_df = db_manager.get_meters(zone['zone_id'])
+        active_meters = len(meters_df[meters_df['status'] == 'active']) if not meters_df.empty else 0
+        st.write(f"**Active Meters:** {active_meters}")
+
+    with col_actions:
+        if st.button("Edit", key=f"edit_zone_{zone['zone_id']}"):
+            st.session_state[f'editing_zone_{zone["zone_id"]}'] = True
+            st.rerun()
+        if zone['status'] == 'active':
+            if st.button("Deactivate", key=f"delete_zone_{zone['zone_id']}"):
+                st.session_state[f'confirm_delete_{zone["zone_id"]}'] = True
+                st.rerun()
+
+    if st.session_state.get(f'editing_zone_{zone["zone_id"]}', False):
+        show_edit_zone_form(zone)
+
+    if st.session_state.get(f'confirm_delete_{zone["zone_id"]}', False):
+        st.warning(f"Are you sure you want to deactivate zone **{zone['name']}**?")
+        st.info("Note: Zone cannot be deleted if it has active meters.")
+        col_yes, col_no = st.columns(2)
+        with col_yes:
+            if st.button("Yes, Deactivate", key=f"confirm_yes_{zone['zone_id']}"):
+                success, msg = db_manager.delete_zone(zone['zone_id'])
+                if success:
+                    st.success(msg)
+                    st.session_state.pop(f'confirm_delete_{zone["zone_id"]}', None)
                     st.rerun()
-                
-                if zone['status'] == 'active':
-                    if st.button("Deactivate", key=f"delete_zone_{zone['zone_id']}"):
-                        st.session_state[f'confirm_delete_{zone["zone_id"]}'] = True
-                        st.rerun()
-            
-            # Edit form (inline)
-            if st.session_state.get(f'editing_zone_{zone["zone_id"]}', False):
-                show_edit_zone_form(zone)
-            
-            # Delete confirmation
-            if st.session_state.get(f'confirm_delete_{zone["zone_id"]}', False):
-                st.warning(f"Are you sure you want to deactivate zone **{zone['name']}**?")
-                st.info("Note: Zone cannot be deleted if it has active meters.")
-                col_yes, col_no = st.columns(2)
-                with col_yes:
-                    if st.button("Yes, Deactivate", key=f"confirm_yes_{zone['zone_id']}"):
-                        success, msg = db_manager.delete_zone(zone['zone_id'])
-                        if success:
-                            st.success(msg)
-                            st.session_state.pop(f'confirm_delete_{zone["zone_id"]}', None)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                with col_no:
-                    if st.button("Cancel", key=f"confirm_no_{zone['zone_id']}"):
-                        st.session_state.pop(f'confirm_delete_{zone["zone_id"]}', None)
-                        st.rerun()
+                else:
+                    st.error(msg)
+        with col_no:
+            if st.button("Cancel", key=f"confirm_no_{zone['zone_id']}"):
+                st.session_state.pop(f'confirm_delete_{zone["zone_id"]}', None)
+                st.rerun()
 
 
 def show_create_zone_form():
