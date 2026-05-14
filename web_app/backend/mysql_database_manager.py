@@ -17,17 +17,22 @@ class MySQLDatabaseManager:
     """MySQL-backed database manager for THIWASCO leak detection system."""
     
     def __init__(self, host=None, port=None, database=None, user=None, password=None):
-        resolved_password = password or os.getenv('MYSQL_PASSWORD')
+        # Railway MySQL plugin exposes MYSQLPASSWORD (no underscore); also accept MYSQL_PASSWORD.
+        resolved_password = (
+            password
+            or os.getenv('MYSQL_PASSWORD')
+            or os.getenv('MYSQLPASSWORD')
+        )
         if resolved_password is None:
             raise ValueError(
                 "MySQL password not set. Pass the 'password' argument or set the "
                 "MYSQL_PASSWORD environment variable."
             )
         self.config = {
-            'host': host or os.getenv('MYSQL_HOST', 'localhost'),
-            'port': port or int(os.getenv('MYSQL_PORT', '3306')),
-            'database': database or os.getenv('MYSQL_DATABASE', 'thiwasco_1'),
-            'user': user or os.getenv('MYSQL_USER', 'root'),
+            'host': host or os.getenv('MYSQL_HOST') or os.getenv('MYSQLHOST', 'localhost'),
+            'port': int(port or os.getenv('MYSQL_PORT') or os.getenv('MYSQLPORT', '3306')),
+            'database': database or os.getenv('MYSQL_DATABASE') or os.getenv('MYSQLDATABASE', 'thiwasco_1'),
+            'user': user or os.getenv('MYSQL_USER') or os.getenv('MYSQLUSER', 'root'),
             'password': resolved_password,
             'autocommit': True,
             'connection_timeout': 10,
