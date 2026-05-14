@@ -119,8 +119,9 @@ if not st.session_state.get("_services_started"):
 
         if not _pl.is_running:
             _pl.start()
-    except Exception:
-        pass
+    except Exception as _svc_err:
+        import traceback
+        print(f"[STARTUP ERROR] Background services failed to start: {_svc_err}\n{traceback.format_exc()}")
     st.session_state["_services_started"] = True
 
 st.sidebar.markdown(
