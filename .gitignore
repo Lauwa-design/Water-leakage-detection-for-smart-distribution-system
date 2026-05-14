@@ -54,6 +54,10 @@ data/
 !data/.gitkeep
 outputs/
 !outputs/.gitkeep
+!outputs/models/
+!outputs/models/*.joblib
+!outputs/models/*.pkl
+!outputs/models/*.json
 scenarios_2000/
 
 # Runtime / temporary files
@@ -79,9 +83,7 @@ Thumbs.db
 ehthumbs.db
 Thumbs.db
 
-# Model outputs (keep folder structure but not large files)
-outputs/models/*.joblib
-outputs/models/*.pkl
+# Model artifacts are tracked (see exceptions above under outputs/)
 
 # Local config
 .env
