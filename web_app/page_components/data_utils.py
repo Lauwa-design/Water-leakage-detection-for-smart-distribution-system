@@ -200,25 +200,43 @@ def load_monitoring_data(hours: int = 24) -> Dict[str, pd.DataFrame]:
 
 
 def get_cached_data(hours: int = 24) -> Dict[str, pd.DataFrame]:
-    """Return monitoring data — from hot cache if ready, otherwise direct DB fetch.
+    """Return monitoring data with three-tier caching.
 
-    Static data (meters, zones) is always present (loaded at import time).
-    Monitoring data (readings, predictions, alerts) comes from the hot cache once
-    the background thread has completed its first cycle.  If it hasn't finished
-    yet (e.g. first seconds after server restart) we do a direct DB fetch
-    immediately — no blocking wait — and seed the cache so subsequent calls are
-    fast.
+    Tier 1 — session_state (90 s TTL): instant within a Streamlit session,
+              survives page navigation without any I/O.
+    Tier 2 — background hot cache: always-fresh data updated every ~30 s by the
+              background thread; used when session cache is stale.
+    Tier 3 — @st.cache_data (load_monitoring_data): server-side Streamlit cache
+              shared across all WebSocket sessions; survives browser refresh;
+              used only before the background thread has finished its first cycle.
     """
+    import time as _t
+
+    cache_key    = f"monitoring_data_{hours}"
+    cache_ts_key = f"monitoring_ts_{hours}"
+    now = _t.monotonic()
+
+    # Tier 1 — session_state fast path (no I/O)
+    if cache_key in st.session_state:
+        if now - st.session_state.get(cache_ts_key, 0) < 90:
+            return st.session_state[cache_key]
+
+    # Tier 2 — background hot cache (lock is cheap, data is fresh)
     if _CACHE_READY.is_set():
         with _HOT_LOCK:
-            return dict(_HOT_CACHE)
+            data = {
+                "meters":      _HOT_CACHE.get("meters",      pd.DataFrame()),
+                "zones":       _HOT_CACHE.get("zones",       pd.DataFrame()),
+                "readings":    _HOT_CACHE.get("readings",    pd.DataFrame()),
+                "predictions": _HOT_CACHE.get("predictions", pd.DataFrame()),
+                "alerts":      _HOT_CACHE.get("alerts",      pd.DataFrame()),
+            }
+    else:
+        # Tier 3 — @st.cache_data (server-side, shared, NOT a direct DB call)
+        data = load_monitoring_data(hours=hours)
 
-    # Background thread still on its first cycle — fetch directly right now
-    data = _fetch_monitoring()
-    with _HOT_LOCK:
-        _HOT_CACHE.update(data)
-        if not _CACHE_READY.is_set():
-            _CACHE_READY.set()
+    st.session_state[cache_key]    = data
+    st.session_state[cache_ts_key] = now
     return data
 
 
