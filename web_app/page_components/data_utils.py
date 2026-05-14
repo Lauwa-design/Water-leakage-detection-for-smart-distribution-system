@@ -334,6 +334,16 @@ def build_meter_snapshot(
     snapshot["confidence"] = snapshot["confidence"].fillna(0.0)
     snapshot["leak_detected"] = snapshot["leak_detected"].fillna(False).astype(bool)
     snapshot["leak_type"] = snapshot["leak_type"].fillna("none")
+
+    # When the prediction row was later reset to "none/None" (after a state flip
+    # back to False) but an open alert still exists, recover the original type
+    # from the alert title, which is stored as "Leak Detected - <leak_type>".
+    if "alert_title" in snapshot.columns:
+        _ambiguous = snapshot["leak_type"].str.lower().isin(["none", "null", ""])
+        _from_alert = snapshot["alert_title"].str.extract(r"Leak Detected - (\w+leak)", expand=False)
+        _use_alert  = _ambiguous & snapshot["alert_status"].notna() & _from_alert.notna()
+        snapshot.loc[_use_alert, "leak_type"] = _from_alert[_use_alert]
+
     snapshot["zone_name"] = snapshot["zone_name"].fillna(snapshot["zone_id"])
     snapshot["zone"] = snapshot["zone_name"].fillna(snapshot["zone_id"])
 

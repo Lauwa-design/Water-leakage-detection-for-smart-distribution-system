@@ -149,7 +149,14 @@ class LeakDetectionModel:
             leak_detected = leak_prob > self.leak_detection_threshold
 
             if leak_detected:
-                if self.multi_model is not None and hasattr(self.multi_model, "predict"):
+                # The multi-class model expects all 17 MULTICLASS_FEATURES. If
+                # the feature dict only has the 7 legacy keys, the remaining 10
+                # default to 0.0, which pushes every prediction into the same RF
+                # leaves as "no data" — producing wrong classifications.  Guard:
+                # only use the multi-class model when all required features are
+                # present (i.e. the primary live_features path succeeded).
+                _has_all_multi = all(name in features for name in self.multiclass_features)
+                if self.multi_model is not None and hasattr(self.multi_model, "predict") and _has_all_multi:
                     try:
                         multi_vals = [
                             float(features.get(name, 0.0)) for name in self.multiclass_features
@@ -179,9 +186,9 @@ class LeakDetectionModel:
 
         if leak_prob > 0.85 and (pressure_drop > 0.015 or daily_variance > 35):
             return "extreme_leak"
-        if leak_prob > 0.5 or flow_variance > 20 or abs(flow_trend) > 0.02:
+        if leak_prob > 0.72 and (flow_variance > 5 or abs(flow_trend) > 0.005):
             return "moderate_leak"
-        return "none"
+        return "slow_leak"
 
     def _fallback_prediction(self, features: Dict[str, float]) -> float:
         """Fallback leak score when model compatibility issues occur."""

@@ -30,26 +30,38 @@ class MySQLDatabaseManager:
             'user': user or os.getenv('MYSQL_USER', 'root'),
             'password': resolved_password,
             'autocommit': True,
-            'connection_timeout': 30,
+            'connection_timeout': 10,
         }
         self._local = threading.local()
         self._initialized = False
+        # _init_db fires 16+ round-trips (CREATE TABLE, CREATE INDEX, information_schema
+        # queries). On Railway, each round-trip is ~50–100 ms, adding up to 1–2 s on
+        # every reconnect. Guard with a process-level flag so it only runs once.
+        self._schema_ready = False
+        self._schema_lock  = threading.Lock()
 
     def _new_conn(self):
-        """Open a fresh connection and initialise the schema."""
+        """Open a fresh connection; initialise the schema only on the first call."""
         try:
             conn = mysql.connector.connect(**self.config)
-            self._init_db(conn)
-            return conn
         except mysql.connector.Error as e:
             if "Unknown database" in str(e):
                 print(f"Database '{self.config['database']}' does not exist. Creating it...")
                 self._create_database()
                 conn = mysql.connector.connect(**self.config)
-                self._init_db(conn)
-                return conn
-            print(f"Database connection error: {e}")
-            raise
+            else:
+                print(f"Database connection error: {e}")
+                raise
+
+        # Run the 16-round-trip schema initialisation exactly once per process.
+        # Subsequent connections (reconnects, new threads) skip it entirely.
+        if not self._schema_ready:
+            with self._schema_lock:
+                if not self._schema_ready:
+                    self._init_db(conn)
+                    self._schema_ready = True
+
+        return conn
 
     def _get_conn(self, readonly: bool = False):
         """Return a healthy per-thread connection, reconnecting if necessary."""

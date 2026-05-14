@@ -105,11 +105,14 @@ class SessionManager:
                     self.invalidate_session(token)
                     return None
 
-        # Refresh last_activity timestamp
-        self._db._execute(
-            "UPDATE user_sessions SET last_activity = NOW() WHERE token = %s",
-            (token,),
-        )
+        # Refresh last_activity — but only when it's stale by 30+ seconds to
+        # avoid a write round-trip on every single navigation click.
+        last_activity = row.get("last_activity")
+        if last_activity is None or (datetime.now() - last_activity).total_seconds() > 30:
+            self._db._execute(
+                "UPDATE user_sessions SET last_activity = NOW() WHERE token = %s",
+                (token,),
+            )
 
         return {
             "user_id":     str(row["user_id"]),

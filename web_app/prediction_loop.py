@@ -33,6 +33,8 @@ class PredictionLoop:
         self.demo_mode = demo_mode
         # last saved prediction per meter: {meter_id: (leak_detected, confidence, saved_at)}
         self._last_saved: dict[str, tuple[bool, float, float]] = {}
+        # consecutive positive-prediction count per meter; resets to 0 on False
+        self._positive_streak: dict[str, int] = {}
         # daily leak counter — resets when the calendar date changes
         self._daily_leak_date: str = ""
         self._daily_leak_count: int = 0
@@ -109,57 +111,65 @@ class PredictionLoop:
             if not raw_predictions:
                 return
 
-            # ── Relative threshold — computed once across the full batch ───────
-            all_confs = [c for _, _, c, _, _, ld in raw_predictions if ld]
-            if all_confs:
-                mean_c = sum(all_confs) / len(all_confs)
-                std_c  = (sum((c - mean_c) ** 2 for c in all_confs) / len(all_confs)) ** 0.5
-                alert_threshold = mean_c + max(std_c, 0.005)
-            else:
-                alert_threshold = 0.85
+            # ── Absolute threshold — fixed confidence floor for a true-leak save ──
+            # The previous relative threshold (mean + std across the batch) caused
+            # rapid True→False→True oscillation: a single positive meter always
+            # fell just below its own mean+margin, so it was demoted to False every
+            # other batch.  An absolute floor is predictable and batch-independent.
+            SAVE_THRESHOLD = 0.92   # minimum confidence to save as leak=True
+            # A meter must produce CONFIRM_COUNT consecutive positive predictions
+            # (each ≥ SAVE_THRESHOLD) before its state is promoted to True.  This
+            # prevents a single-batch spike from permanently flipping the status.
+            CONFIRM_COUNT = 2
 
             # ── Pass 2: save predictions + create alerts ──────────────────────
-            # leak_detected is only kept True for meters that clear the relative
-            # threshold so that leak_predictions matches what the alert queue shows.
             candidates = []
             for meter_id, zone_id, confidence, leak_type, features, leak_detected in raw_predictions:
-                # Apply relative threshold — demote uniform false positives to False
-                if leak_detected and confidence < alert_threshold:
+                # Apply absolute threshold
+                if leak_detected and confidence < SAVE_THRESHOLD:
                     leak_detected = False
-                    confidence = round(confidence, 4)
-                    leak_type  = "none"
+                    leak_type     = "none"
+
+                # Update consecutive-positive streak
+                if leak_detected:
+                    self._positive_streak[meter_id] = self._positive_streak.get(meter_id, 0) + 1
+                else:
+                    self._positive_streak[meter_id] = 0
+
+                # Require confirmation: must be positive for CONFIRM_COUNT batches in a row
+                confirmed_leak = leak_detected and self._positive_streak.get(meter_id, 0) >= CONFIRM_COUNT
 
                 # Daily cap — after 20 true leaks today, save remainder as False
-                if leak_detected and self._daily_leak_count >= self.DAILY_LEAK_CAP:
-                    leak_detected = False
-                    confidence = 0.0
-                    leak_type  = "none"
+                if confirmed_leak and self._daily_leak_count >= self.DAILY_LEAK_CAP:
+                    confirmed_leak = False
+                    confidence     = 0.0
+                    leak_type      = "none"
 
                 # State-change guard — skip DB write if status unchanged
                 _prev = self._last_saved.get(meter_id)
-                if _prev is not None and _prev[0] == leak_detected:
-                    if leak_detected and confidence >= alert_threshold:
+                if _prev is not None and _prev[0] == confirmed_leak:
+                    if confirmed_leak:
                         candidates.append((meter_id, zone_id, confidence, leak_type))
                     continue
 
                 db_manager.add_leak_prediction(
                     meter_id=meter_id,
                     confidence=confidence,
-                    leak_detected=leak_detected,
+                    leak_detected=confirmed_leak,
                     leak_type=leak_type,
                     features=json.dumps(features)
                 )
-                self._last_saved[meter_id] = (leak_detected, confidence, _now)
-                if leak_detected:
+                self._last_saved[meter_id] = (confirmed_leak, confidence, _now)
+                if confirmed_leak:
                     self._daily_leak_count += 1
                     candidates.append((meter_id, zone_id, confidence, leak_type))
-                print(f"[Prediction Loop] Saved prediction for {meter_id}: leak={leak_detected}, conf={confidence:.2f}")
+                print(f"[Prediction Loop] Saved prediction for {meter_id}: leak={confirmed_leak}, conf={confidence:.2f}")
 
             if not candidates:
                 return
 
             for meter_id, zone_id, confidence, leak_type in sorted(candidates, key=lambda x: -x[2]):
-                if confidence < alert_threshold:
+                if confidence < SAVE_THRESHOLD:
                     break  # sorted descending — nothing below this will qualify
 
                 existing_meter = db_manager.get_active_alert_for_meter(meter_id)

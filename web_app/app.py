@@ -40,6 +40,18 @@ st.set_page_config(
 # ── Session restoration ───────────────────────────────────────────────────────
 # Runs on every page load (including browser refresh).
 # If session_state lost its auth flag (new WebSocket), check the URL token.
+
+# Sidebar-and-body hide CSS — injected before any rendering when we know a DB
+# round-trip is about to happen, so the old authenticated sidebar never flashes
+# over the login form (or vice-versa) during validation.
+_BLANK_CSS = """<style>
+[data-testid="stSidebar"], [data-testid="stAppViewContainer"],
+#MainMenu, footer, header,
+[data-testid="stToolbar"], [data-testid="stDecoration"],
+.stApp > header { visibility: hidden !important; }
+</style>"""
+
+
 def _restore_session() -> bool:
     """Try to restore an authenticated session from the URL token.
 
@@ -54,10 +66,17 @@ def _restore_session() -> bool:
     if not token:
         return False
 
+    # A token exists but session_state was cleared (browser refresh / new
+    # WebSocket).  Hide all content while the DB validates the token so the
+    # old authenticated sidebar never bleeds through on the login page.
+    _hide_slot = st.empty()
+    _hide_slot.markdown(_BLANK_CSS, unsafe_allow_html=True)
+
     user = session_manager.validate_session(token)
 
     if not user:
         # Token expired, invalid, or user deactivated — clear and go to login
+        _hide_slot.empty()
         st.query_params.clear()
         return False
 
@@ -65,10 +84,12 @@ def _restore_session() -> bool:
     required = {"user_id", "email", "name", "role"}
     if not required.issubset(set(k for k, v in user.items() if v)):
         session_manager.invalidate_session(token)
+        _hide_slot.empty()
         st.query_params.clear()
         return False
 
     # Restore session state from DB-verified user data
+    _hide_slot.empty()
     st.session_state.authenticated = True
     st.session_state.user_id       = user["user_id"]
     st.session_state.user_email    = user["email"]
