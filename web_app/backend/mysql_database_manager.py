@@ -9,30 +9,50 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 load_dotenv()
 
 
+def _parse_mysql_url(url: str) -> dict:
+    """Parse a mysql://user:pass@host:port/db URL into a config dict."""
+    parsed = urlparse(url)
+    return {
+        'host': parsed.hostname or 'localhost',
+        'port': parsed.port or 3306,
+        'user': parsed.username or 'root',
+        'password': parsed.password or '',
+        'database': (parsed.path or '/thiwasco_1').lstrip('/'),
+    }
+
+
 class MySQLDatabaseManager:
     """MySQL-backed database manager for THIWASCO leak detection system."""
-    
+
     def __init__(self, host=None, port=None, database=None, user=None, password=None):
-        # Railway MySQL plugin exposes MYSQLPASSWORD (no underscore); also accept MYSQL_PASSWORD.
+        # 1. Explicit argument
+        # 2. Underscore form: MYSQL_PASSWORD (set manually in Railway web service)
+        # 3. No-underscore form: MYSQLPASSWORD (Railway MySQL plugin default)
+        # 4. Full URL: MYSQL_URL or DATABASE_URL (reference just one var in Railway)
+        url_str = os.getenv('MYSQL_URL') or os.getenv('DATABASE_URL') or ''
+        url_cfg = _parse_mysql_url(url_str) if url_str.startswith('mysql') else {}
+
         resolved_password = (
             password
             or os.getenv('MYSQL_PASSWORD')
             or os.getenv('MYSQLPASSWORD')
+            or url_cfg.get('password')
         )
-        if resolved_password is None:
+        if not resolved_password:
             raise ValueError(
                 "MySQL password not set. Pass the 'password' argument or set the "
                 "MYSQL_PASSWORD environment variable."
             )
         self.config = {
-            'host': host or os.getenv('MYSQL_HOST') or os.getenv('MYSQLHOST', 'localhost'),
-            'port': int(port or os.getenv('MYSQL_PORT') or os.getenv('MYSQLPORT', '3306')),
-            'database': database or os.getenv('MYSQL_DATABASE') or os.getenv('MYSQLDATABASE', 'thiwasco_1'),
-            'user': user or os.getenv('MYSQL_USER') or os.getenv('MYSQLUSER', 'root'),
+            'host': host or os.getenv('MYSQL_HOST') or os.getenv('MYSQLHOST') or url_cfg.get('host', 'localhost'),
+            'port': int(port or os.getenv('MYSQL_PORT') or os.getenv('MYSQLPORT') or url_cfg.get('port', 3306)),
+            'database': database or os.getenv('MYSQL_DATABASE') or os.getenv('MYSQLDATABASE') or url_cfg.get('database', 'thiwasco_1'),
+            'user': user or os.getenv('MYSQL_USER') or os.getenv('MYSQLUSER') or url_cfg.get('user', 'root'),
             'password': resolved_password,
             'autocommit': True,
             'connection_timeout': 10,
