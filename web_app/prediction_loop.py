@@ -112,14 +112,10 @@ class PredictionLoop:
                 return
 
             # ── Absolute threshold — fixed confidence floor for a true-leak save ──
-            # The previous relative threshold (mean + std across the batch) caused
-            # rapid True→False→True oscillation: a single positive meter always
-            # fell just below its own mean+margin, so it was demoted to False every
-            # other batch.  An absolute floor is predictable and batch-independent.
-            SAVE_THRESHOLD = 0.92   # minimum confidence to save as leak=True
-            # A meter must produce CONFIRM_COUNT consecutive positive predictions
-            # (each ≥ SAVE_THRESHOLD) before its state is promoted to True.  This
-            # prevents a single-batch spike from permanently flipping the status.
+            # 0.65 catches slow (0.72–0.85) and moderate leaks; CONFIRM_COUNT=2
+            # (two consecutive positive batches, 60 s apart) prevents single-spike
+            # false positives without requiring extreme-only confidence.
+            SAVE_THRESHOLD = 0.65   # minimum confidence to save as leak=True
             CONFIRM_COUNT = 2
 
             # ── Pass 2: save predictions + create alerts ──────────────────────

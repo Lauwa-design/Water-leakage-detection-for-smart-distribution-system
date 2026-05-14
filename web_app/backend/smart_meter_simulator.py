@@ -148,30 +148,28 @@ class SmartMeterSimulator:
                     # Note: ML predictions are handled by the prediction_loop service
                     # Simulator only writes sensor readings, keeping concerns separate
 
-                # Realistic leak injection: max 3 concurrent leaks, ~10% chance every 2 min
-                MAX_CONCURRENT_LEAKS = 3
+                # Leak injection: max 5 concurrent leaks, ~40% chance every 30 s
+                MAX_CONCURRENT_LEAKS = 5
                 leak_check_counter += 1
 
-                # Check every 24 cycles (~2 min); 10% probability → realistic leak rate
+                # Check every 6 cycles (~30 s); 40% probability keeps leaks visible
                 if len(self.leak_scenarios) < MAX_CONCURRENT_LEAKS:
-                    if leak_check_counter % 24 == 0 and random.random() < 0.10:  # ~10% every 2 min
-                        # Pick a random meter that doesn't already have a leak
+                    if leak_check_counter % 6 == 0 and random.random() < 0.40:
                         available_meters = [m for m in self.meters if m not in self.leak_scenarios]
                         if available_meters:
                             target_meter = random.choice(available_meters)
-                            # Choose leak type with realistic distribution (mostly small leaks)
                             leak_roll = random.random()
-                            if leak_roll < 0.7:  # 70% small/slow leaks
+                            if leak_roll < 0.50:  # 50% slow leaks — higher magnitude so model scores ≥ 0.65
                                 leak_type = LeakType.SLOW
-                                magnitude = random.uniform(0.05, 0.2)
-                                duration = random.randint(30, 120)  # 30min to 2hrs
-                            elif leak_roll < 0.9:  # 20% moderate leaks
+                                magnitude = random.uniform(0.15, 0.35)
+                                duration = random.randint(30, 90)
+                            elif leak_roll < 0.80:  # 30% moderate leaks
                                 leak_type = LeakType.MODERATE
-                                magnitude = random.uniform(0.2, 0.5)
+                                magnitude = random.uniform(0.30, 0.60)
                                 duration = random.randint(15, 45)
-                            else:  # 10% instant/burst leaks (rare)
+                            else:  # 20% instant/burst leaks
                                 leak_type = LeakType.INSTANT
-                                magnitude = random.uniform(0.5, 0.9)
+                                magnitude = random.uniform(0.55, 0.90)
                                 duration = random.randint(5, 20)
 
                             self.trigger_leak_scenario(target_meter, leak_type, magnitude, duration)
