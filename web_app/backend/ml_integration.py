@@ -58,6 +58,7 @@ class LeakDetectionModel:
 
     def _load_models(self) -> None:
         """Load the trained models and feature list from the existing artifacts."""
+        print(f"[ML] MODEL_DIR={MODEL_DIR} | binary={self.binary_model_path} | multi={self.multi_model_path}")
         try:
             if self.binary_model_path is not None:
                 self.binary_model = joblib.load(self.binary_model_path)
@@ -108,7 +109,8 @@ class LeakDetectionModel:
             if not self.feature_list:
                 self.feature_list = self.binary_features.copy()
         except Exception as exc:
-            print(f"Error loading models: {exc}")
+            import traceback
+            print(f"[ML] FATAL: model load failed — {exc}\n{traceback.format_exc()}")
             self.binary_model = None
             self.multi_model = None
             self.binary_features = DEFAULT_FEATURES.copy()
