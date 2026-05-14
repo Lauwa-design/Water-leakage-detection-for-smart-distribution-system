@@ -16,13 +16,13 @@ def _big_card(zone: pd.Series, is_top: bool = False) -> None:
     region = str(zone.get("region", "")).replace("_", " ").upper()
     name = str(zone.get("name", ""))
     flagged = int(zone.get("flagged", 0))
-    warn = "&#9651;" if is_top else ""
+    warn = "TOP" if is_top else ""
     st.markdown(
         f"""<div style="background:#162032;border:1px solid #2a3a50;border-radius:10px;
             padding:20px 18px 16px;margin-bottom:12px;min-height:155px;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div style="color:#8899aa;font-size:10px;letter-spacing:1.5px;font-weight:600;">{region}</div>
-            <div style="font-size:22px;color:#e87878;line-height:1;">{warn}</div>
+            <div style="font-size:12px;color:#e87878;font-weight:700;line-height:1;">{warn}</div>
           </div>
           <div style="font-size:20px;font-weight:700;color:#e2e8f0;margin:6px 0 10px;">{name}</div>
           <div style="font-size:44px;font-weight:800;color:#e87878;line-height:1;">{flagged}</div>
@@ -136,8 +136,10 @@ def _render_risk_heatmap(zones_df: pd.DataFrame) -> None:
     with lcol:
         st.markdown(
             '<div style="display:flex;gap:18px;justify-content:flex-end;padding-top:18px;">'
-            '<span style="color:#e87878;font-size:12px;font-weight:700;">&#9679; HIGH RISK</span>'
-            '<span style="color:#4DD9D5;font-size:12px;font-weight:700;">&#9679; MEDIUM RISK</span>'
+            '<span style="display:inline-flex;align-items:center;gap:5px;color:#e87878;font-size:12px;font-weight:700;">'
+            '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#e87878;"></span> HIGH RISK</span>'
+            '<span style="display:inline-flex;align-items:center;gap:5px;color:#4DD9D5;font-size:12px;font-weight:700;">'
+            '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4DD9D5;"></span> MEDIUM RISK</span>'
             '</div>',
             unsafe_allow_html=True,
         )

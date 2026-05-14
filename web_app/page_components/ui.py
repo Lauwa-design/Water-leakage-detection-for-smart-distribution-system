@@ -223,6 +223,7 @@ def apply_theme(dark_mode: bool = True) -> None:
                 background: var(--card);
                 border: 1px solid var(--border);
                 box-shadow: var(--shadow);
+                min-height: 130px;
             }
             .metric-card--neutral { box-shadow: 0 0 20px 2px rgba(40,112,184,.22), var(--shadow); border-color: rgba(40,112,184,.28); }
             .metric-card--success { box-shadow: 0 0 20px 2px rgba(21,128,61,.20),  var(--shadow); border-color: rgba(21,128,61,.28); }
@@ -234,10 +235,11 @@ def apply_theme(dark_mode: bool = True) -> None:
                 letter-spacing: 0.1em; color: var(--text-2); margin: 0 0 0.5rem;
             }
             .metric-value {
-                font-size: 2.19rem; line-height: 1.1; font-weight: 800;
-                color: var(--text-1); margin: 0;
+                font-size: 1.9rem; line-height: 1.15; font-weight: 800;
+                color: var(--text-1); margin: 0; white-space: nowrap; overflow: hidden;
+                text-overflow: ellipsis;
             }
-            .metric-detail { margin-top: 0.4rem; color: var(--text-2); font-size: 1.01rem; }
+            .metric-detail { margin-top: 0.4rem; color: var(--text-2); font-size: 0.88rem; }
 
             /* Overview metric value color classes */
             .text-cyan    { color: #06b6d4 !important; }
@@ -399,7 +401,7 @@ def apply_theme(dark_mode: bool = True) -> None:
                 background: var(--surface);
                 border: 1px solid var(--border);
                 box-shadow: var(--shadow);
-                min-height: 122px;
+                min-height: 130px;
             }
 
             .metric-card--neutral { box-shadow: 0 0 20px 2px rgba(59,130,246,.28), var(--shadow); border-color: rgba(59,130,246,.22); }
@@ -408,26 +410,29 @@ def apply_theme(dark_mode: bool = True) -> None:
             .metric-card--danger  { box-shadow: 0 0 20px 2px rgba(239,68,68,.30),  var(--shadow); border-color: rgba(239,68,68,.22); }
 
             .metric-label {
-                font-size: 1.01rem;
+                font-size: 0.72rem;
                 font-weight: 700;
                 text-transform: uppercase;
                 letter-spacing: 0.08em;
                 color: var(--text-muted);
-                margin: 0 0 0.65rem;
+                margin: 0 0 0.5rem;
             }
 
             .metric-value {
-                font-size: 2.14rem;
-                line-height: 1.1;
+                font-size: 1.9rem;
+                line-height: 1.15;
                 font-weight: 800;
                 color: var(--brand-950);
                 margin: 0;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 
             .metric-detail {
-                margin-top: 0.55rem;
+                margin-top: 0.4rem;
                 color: var(--text-muted);
-                font-size: 1.09rem;
+                font-size: 0.82rem;
             }
 
             .section-card {
@@ -612,12 +617,16 @@ _GLOW_MAP: dict[str, tuple[str, str, str]] = {
 
 _TABLE_CSS = """
 <style>
-.glow-table-wrap{overflow-x:auto;border-radius:10px;border:1px solid rgba(255,255,255,0.07);}
+.glow-table-wrap{
+    overflow-x:auto;overflow-y:auto;max-height:260px;
+    border-radius:10px;border:1px solid rgba(255,255,255,0.07);
+}
 .glow-table{width:100%;border-collapse:collapse;font-size:0.88rem;}
 .glow-table th{
     background:#111d35;color:#475569;font-size:0.7rem;font-weight:700;
     letter-spacing:0.09em;text-transform:uppercase;padding:9px 14px;
     border-bottom:1px solid rgba(255,255,255,0.07);text-align:left;
+    position:sticky;top:0;z-index:1;
 }
 .glow-table td{
     padding:8px 14px;color:#cbd5e1;border-bottom:1px solid rgba(255,255,255,0.04);

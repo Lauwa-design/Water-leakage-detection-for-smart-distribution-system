@@ -465,17 +465,20 @@ class MySQLDatabaseManager:
     
     def add_leak_prediction(self, meter_id: str, confidence: float,
                            leak_detected: bool, leak_type: str, features: str):
-        """Add leak prediction - alias for store_leak_prediction with auto timestamp"""
-        timestamp = datetime.now()
-        
-        # Convert numpy types to native Python types to avoid MySQL conversion errors
+        """Upsert leak prediction — one row per meter, replaced on every state change."""
         import numpy as np
         if isinstance(leak_detected, (np.bool_, np.generic)):
             leak_detected = bool(leak_detected)
         if isinstance(confidence, (np.floating, np.generic)):
             confidence = float(confidence)
-        
-        self.store_leak_prediction(meter_id, timestamp, confidence, leak_detected, leak_type, features)
+
+        timestamp = datetime.now()
+        self._execute("DELETE FROM leak_predictions WHERE meter_id = %s", (meter_id,))
+        self._execute(
+            "INSERT INTO leak_predictions (meter_id, timestamp, confidence, leak_detected, leak_type, features) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (meter_id, timestamp, confidence, leak_detected, leak_type, features)
+        )
     
     def add_alert(self, meter_id: str, zone_id: str, severity: str, title: str, message: str):
         self._execute(
@@ -502,17 +505,19 @@ class MySQLDatabaseManager:
         return None
     
     def get_recent_zone_alert(self, zone_id: str, within_minutes: int = 15) -> Optional[Dict]:
-        """Return the most recent open alert in a zone created within `within_minutes`.
+        """Return the most recent alert in a zone created within `within_minutes`.
 
         Used by the prediction loop to detect same-source leaks — if another meter
         in the same zone was already flagged recently, the new detection is likely
         the same pipe rupture propagating hydraulically, not a separate leak.
+
+        Purely time-based: status is ignored so that an unassigned (unresolvable)
+        alert does not permanently hold the zone open.
         """
         df = self._query_to_df('''
             SELECT id, meter_id, severity, created_at
             FROM alerts
             WHERE zone_id = %s
-              AND status != 'resolved'
               AND created_at >= NOW() - INTERVAL %s MINUTE
             ORDER BY created_at DESC
             LIMIT 1

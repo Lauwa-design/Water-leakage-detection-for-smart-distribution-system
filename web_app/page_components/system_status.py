@@ -102,7 +102,7 @@ def show_system_status() -> None:
             f"<h2 style='font-size:1.9rem;font-weight:800;color:#e2e8f0;margin:0 0 .35rem;'>"
             f"System Status</h2>"
             f"<span style='color:{health_color};font-size:.87rem;font-weight:600;'>"
-            f"&#9679; {health_msg} Service health confirmed at {now_str}.</span>",
+            f"{health_msg} Service health confirmed at {now_str}.</span>",
             unsafe_allow_html=True,
         )
     with btn_col:
@@ -300,7 +300,7 @@ def show_system_status() -> None:
             f"<div style='font-size:.88rem;font-weight:700;color:#e2e8f0;margin-bottom:.3rem;'>DB Connection</div>"
             f"<div style='margin-bottom:.6rem;'>"
             f"<span style='color:{conn_color};font-size:.7rem;font-weight:700;letter-spacing:.1em;'>"
-            f"&#9679; {conn_label}</span></div>"
+            f"{conn_label}</span></div>"
             f"<table style='width:100%;border-collapse:collapse;'>{db_rows_html}</table>"
             f"</div>",
             unsafe_allow_html=True,

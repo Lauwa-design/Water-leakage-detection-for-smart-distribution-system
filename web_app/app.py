@@ -31,7 +31,7 @@ session_manager = SessionManager(db_manager)
 
 st.set_page_config(
     page_title="THIWASCO Leak Detection",
-    page_icon="\U0001F4A7",
+    page_icon="TLD",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -85,22 +85,22 @@ st.session_state.pop("_thiwasco_theme_applied", None)
 apply_theme(dark_mode=True)
 bootstrap_demo_environment()
 
-# ── Auto-start background services ───────────────────────────────────────────
-# These are global singletons (daemon threads); the check prevents double-starts
-# across Streamlit reruns or multiple browser sessions.
-try:
-    from backend.smart_meter_simulator import smart_meter_simulator, setup_sample_meters
-    from prediction_loop import prediction_loop as _pl
+# ── Auto-start background services (once per Streamlit session) ───────────────
+if not st.session_state.get("_services_started"):
+    try:
+        from backend.smart_meter_simulator import smart_meter_simulator, setup_sample_meters
+        from prediction_loop import prediction_loop as _pl
 
-    if not smart_meter_simulator.is_running:
-        if not smart_meter_simulator.meters:
-            setup_sample_meters()
-        smart_meter_simulator.start_simulation()
+        if not smart_meter_simulator.is_running:
+            if not smart_meter_simulator.meters:
+                setup_sample_meters()
+            smart_meter_simulator.start_simulation()
 
-    if not _pl.is_running:
-        _pl.start()
-except Exception as _svc_err:
-    pass  # Non-fatal — services can be started manually via System Status
+        if not _pl.is_running:
+            _pl.start()
+    except Exception:
+        pass
+    st.session_state["_services_started"] = True
 
 st.sidebar.markdown(
     "<div style='padding:0.6rem 0 0.4rem;'>"

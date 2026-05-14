@@ -388,6 +388,7 @@ def build_meter_snapshot(
     return snapshot.sort_values(["attention_rank", "confidence"], ascending=[False, False]).reset_index(drop=True)
 
 
+@st.cache_data(ttl=30)
 def get_service_states() -> list[ServiceState]:
     """Return a concise health summary for the main runtime services."""
     states: list[ServiceState] = []

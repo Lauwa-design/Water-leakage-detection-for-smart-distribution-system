@@ -17,6 +17,18 @@ from page_components.data_utils import (
 from page_components.ui import render_metric, render_status_pill, section_header, show_glowing_table
 
 
+@st.cache_data(ttl=30)
+def _active_alert_counts() -> tuple[int, int]:
+    """Cached count of open alerts and affected meters (refreshes every 30 s)."""
+    df = db_manager._query_to_df(
+        "SELECT COUNT(*) AS n, COUNT(DISTINCT meter_id) AS meters "
+        "FROM alerts WHERE status != 'resolved'"
+    )
+    if df.empty:
+        return 0, 0
+    return int(df.iloc[0]["n"]), int(df.iloc[0]["meters"])
+
+
 def show_overview():
     # ── Load data ─────────────────────────────────────────────────────────────
     data        = get_cached_data(hours=24)
@@ -32,14 +44,10 @@ def show_overview():
     total_meters = len(static_data["meters"]) if not static_data["meters"].empty else 0
     total_zones  = len(static_data["zones"])  if not static_data["zones"].empty  else 0
 
-    # Query all open alerts directly — no time window so alerts older than 24 h
-    # (still unresolved) are counted correctly.
-    _open_df = db_manager._query_to_df(
-        "SELECT COUNT(*) AS n, COUNT(DISTINCT meter_id) AS meters "
-        "FROM alerts WHERE status != 'resolved'"
-    )
-    active_alerts  = int(_open_df.iloc[0]["n"])      if not _open_df.empty else 0
-    total_detected = int(_open_df.iloc[0]["meters"]) if not _open_df.empty else 0
+    active_alerts, _ = _active_alert_counts()
+    # Derive leak count from the same snapshot used by Leak Analysis so both
+    # pages always show the same number.
+    total_detected = int((snapshot["severity"] != "none").sum()) if not snapshot.empty else 0
 
     # ── Header ────────────────────────────────────────────────────────────────
     st.title("Overview")
@@ -101,8 +109,8 @@ def show_overview():
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 font_color="#94a3b8",
-                height=270,
-                margin=dict(l=55, r=55, t=10, b=35),
+                height=470,
+                margin=dict(l=55, r=55, t=10, b=40),
                 legend=dict(
                     orientation="h", x=0.5, xanchor="center", y=1.14,
                     font=dict(size=10, color="#94a3b8"),

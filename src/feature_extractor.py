@@ -475,6 +475,26 @@ def live_features_from_readings_frame(frame: pd.DataFrame) -> dict[str, float]:
         df["time_index"] = np.arange(len(df), dtype=int)
 
     df = df.sort_values("time_index", kind="mergesort").reset_index(drop=True)
+
+    # ── Scale inference flow to match training distribution ───────────────────
+    # Training data (generate_scenarios.py) uses DMA bulk flow in L/min
+    # (DMA_BASELINE_MIN=180, DMA_BASELINE_MAX=420 L/min).  Live meter readings
+    # come from the DB in m³/h at individual-meter scale (~0.25–2 m³/h =
+    # 4–33 L/min) — roughly 50–70× smaller than the training range.
+    # The model's RF splits on absolute feature values (mnf, daily_variance,
+    # flow_variance), so unscaled inference inputs fall in the "extremely low
+    # flow" leaves, producing a uniform ~0.92 leak probability for every meter.
+    # Fix: rescale each meter's mean_flow so its average matches the training
+    # baseline midpoint (300 L/min), keeping relative night/day shapes intact.
+    _TRAINING_BASELINE_LMIN = 300.0  # midpoint of DMA_BASELINE_MIN/MAX
+    _M3H_TO_LMIN = 1000.0 / 60.0    # 1 m³/h = 16.667 L/min
+    _meter_mean_lmin = float(df["mean_flow"].mean()) * _M3H_TO_LMIN
+    if _meter_mean_lmin > 0.1:
+        _scale = _TRAINING_BASELINE_LMIN / _meter_mean_lmin
+        df["mean_flow"] = df["mean_flow"] * (_M3H_TO_LMIN * _scale)
+    else:
+        df["mean_flow"] = df["mean_flow"] * _M3H_TO_LMIN
+
     raw = _scenario_features(df)
 
     out: dict[str, float] = {}
@@ -485,6 +505,56 @@ def live_features_from_readings_frame(frame: pd.DataFrame) -> dict[str, float]:
         if isinstance(v, (int, float, np.floating)):
             fv = float(v)
             out[k] = fv if np.isfinite(fv) else 0.0
+
+    # ── Override trend/variance features with a 2h recent window ─────────────
+    # Computing flow_trend, flow_variance, daily_variance, and pressure_drop_pattern
+    # over the full 24h window conflates the normal diurnal swing (night 0.3× →
+    # peak 1.5× base_flow) with actual leak anomalies, producing false-positive
+    # bursts during morning and evening transitions. Restricting to the last 2 hours
+    # removes that diurnal confounding while still capturing sudden anomalous changes.
+    # mnf, night_flow_ratio, and multiclass shape features still use the full window.
+    if "timestamp" in df.columns:
+        ts = pd.to_datetime(df["timestamp"], errors="coerce")
+        cutoff = ts.max() - pd.Timedelta(hours=2)
+        recent_mask = ts >= cutoff
+        recent = df[recent_mask]
+        if len(recent) < 5:
+            recent = df.tail(20)
+    else:
+        recent = df.tail(max(20, len(df) // 12))  # ~2h at 5-min intervals
+
+    flow_r = recent["mean_flow"]
+    pres_r = recent["mean_pressure"]
+
+    out["flow_variance"] = float(flow_r.var()) if len(flow_r) > 1 else 0.0
+    out["daily_variance"] = float(flow_r.max() - flow_r.min()) if len(flow_r) > 1 else 0.0
+    out["flow_trend"] = _safe_flow_trend(flow_r) if len(flow_r) >= 5 else 0.0
+    out["pressure_drop_pattern"] = _safe_pressure_drop(pres_r)
+    # pressure_flow_correlation is also affected by the diurnal anti-correlation
+    # (morning: flow ↑, pressure ↓), which spans the full 24h window.  The model
+    # associates negative correlation with leaks, so computing it over the full day
+    # makes every meter look suspicious.  Use the same 2h window.
+    out["pressure_flow_correlation"] = _safe_corr(flow_r, pres_r)
+
+    # Sanitise the overridden values
+    for k in ("flow_variance", "daily_variance", "flow_trend", "pressure_drop_pattern", "pressure_flow_correlation"):
+        if not np.isfinite(out.get(k, 0.0)):
+            out[k] = 0.0
+
+    # ── Diurnal correction for night-based features ───────────────────────────
+    # Training data (WNTR/EPANET Hanoi) has flat demand — no diurnal — so
+    # training non-leaks have night_flow_ratio ≈ 1.0 and mnf ≈ mean_flow.
+    # The simulator uses a 0.30× night multiplier, giving night_flow_ratio ≈ 0.30
+    # and mnf ≈ 0.30 × scaled_mean for every normal meter.  Dividing by 0.30
+    # maps normal diurnal meters back to the training distribution:
+    #   night_flow_ratio  0.30 → 1.0    mnf  90 → 300 L/min
+    # A real night leak makes night_flow_ratio > 0.30 → corrected > 1.0,
+    # preserving the signal the model was trained to detect.
+    _NIGHT_MULT = 0.3
+    for _nk in ("mnf", "night_flow_ratio", "night_mnf_ratio"):
+        if _nk in out and _NIGHT_MULT > 0:
+            out[_nk] = out[_nk] / _NIGHT_MULT
+
     return out
 
 

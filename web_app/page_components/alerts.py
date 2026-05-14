@@ -26,16 +26,16 @@ from page_components.data_utils import clear_alert_cache
 def show_alerts():
     """Enhanced alerts management page with status workflow"""
     page_header("Alerts", "Review, assign and resolve active leak alerts.", eyebrow="Alerts Management")
-    
+
     current_user_id = get_current_user_id()
     current_role = get_current_user_role()
-    
+
     # Check if Field Technician - show only their team's alerts
     if is_field_technician():
         st.write("View alerts assigned to your teams.")
         show_field_technician_alerts(current_user_id)
         return
-    
+
     # For NRW Officer and System Admin - show all alerts
     st.write("Review and manage leak alerts, assign to teams, and track resolution status.")
 
@@ -239,13 +239,17 @@ def show_zone_grouped_new_alerts(alerts_df: pd.DataFrame):
                     if fail:
                         st.warning(f"{fail} assignment(s) failed")
             with col_resolve:
-                if can_resolve_alerts() and st.button(f"Resolve all ({n_total})", key=f"zone_resolve_{zone}"):
-                    for _, a in zone_alerts.iterrows():
-                        alert_manager.resolve_alert(int(a['id']), get_current_user_id())
-                    st.success(f"Resolved all alerts in {zone}")
-                    st.cache_data.clear()
-                    clear_alert_cache()
-                    st.rerun()
+                n_assigned = int((zone_alerts['status'] == 'assigned').sum())
+                if can_resolve_alerts() and n_assigned > 0:
+                    if st.button(f"Resolve assigned ({n_assigned})", key=f"zone_resolve_{zone}"):
+                        for _, a in zone_alerts[zone_alerts['status'] == 'assigned'].iterrows():
+                            alert_manager.resolve_alert(int(a['id']), get_current_user_id())
+                        st.success(f"Resolved {n_assigned} assigned alert(s) in {zone}")
+                        st.cache_data.clear()
+                        clear_alert_cache()
+                        st.rerun()
+                elif can_resolve_alerts():
+                    st.caption("Assign first to resolve.")
         else:
             st.info("No active teams — create teams first in the Teams page.")
 
@@ -305,11 +309,12 @@ def show_alert_card(alert: pd.Series, status: str):
         with col2:
             # Action buttons (NRW Officer only)
             if can_assign_alerts() and alert['status'] in ['new', 'assigned']:
-                if st.button("Assign to Team", key=f"assign_{key_prefix}"):
+                _btn_label = "Reassign" if alert['status'] == 'assigned' else "Assign to Team"
+                if st.button(_btn_label, key=f"assign_{key_prefix}"):
                     st.session_state[f'assigning_{key_prefix}'] = True
                     st.rerun()
             
-            if can_resolve_alerts() and alert['status'] != 'resolved':
+            if can_resolve_alerts() and alert['status'] == 'assigned':
                 if st.button("Mark as Resolved", key=f"resolve_{key_prefix}"):
                     success, msg = alert_manager.resolve_alert(
                         alert['id'],
@@ -322,6 +327,8 @@ def show_alert_card(alert: pd.Series, status: str):
                         st.rerun()
                     else:
                         st.error(msg)
+            elif can_resolve_alerts() and alert['status'] == 'new':
+                st.caption("Assign to a team before resolving.")
 
         # Inline assignment form
         if st.session_state.get(f'assigning_{key_prefix}', False):

@@ -55,6 +55,9 @@ def _export_pdf(
     """Generate a proper PDF report using fpdf2."""
     from fpdf import FPDF
 
+    def _latin1(text: str) -> str:
+        return text.encode("latin-1", errors="replace").decode("latin-1")
+
     class _PDF(FPDF):
         def header(self):
             self.set_fill_color(26, 58, 92)
@@ -62,10 +65,10 @@ def _export_pdf(
             self.set_font("Helvetica", "B", 13)
             self.set_text_color(255, 255, 255)
             self.set_xy(10, 4)
-            self.cell(0, 7, f"THIWASCO — {title}", ln=False)
+            self.cell(0, 7, _latin1(f"THIWASCO - {title}"), ln=False)
             self.set_font("Helvetica", "", 7)
             self.set_xy(self.w - 90, 4)
-            self.cell(80, 4, f"Period: {period}", align="R", ln=False)
+            self.cell(80, 4, _latin1(f"Period: {period}"), align="R", ln=False)
             self.set_xy(self.w - 90, 9)
             self.cell(80, 4, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", align="R")
             self.set_text_color(0, 0, 0)
@@ -87,7 +90,7 @@ def _export_pdf(
             return
         pdf.set_font("Helvetica", "B", 9)
         pdf.set_text_color(26, 58, 92)
-        pdf.cell(0, 7, section, ln=True)
+        pdf.cell(0, 7, _latin1(section), ln=True)
         pdf.set_text_color(0, 0, 0)
 
         avail = pdf.w - pdf.l_margin - pdf.r_margin
@@ -97,7 +100,7 @@ def _export_pdf(
         pdf.set_fill_color(26, 58, 92)
         pdf.set_text_color(255, 255, 255)
         for col in df.columns:
-            pdf.cell(col_w, 6, str(col)[:22], border=0, fill=True, align="C")
+            pdf.cell(col_w, 6, _latin1(str(col)[:22]), border=0, fill=True, align="C")
         pdf.ln()
 
         pdf.set_font("Helvetica", "", 7)
@@ -107,8 +110,8 @@ def _export_pdf(
             pdf.set_fill_color(242, 246, 252) if fill else pdf.set_fill_color(255, 255, 255)
             for col in df.columns:
                 val = str(row[col]) if not pd.isna(row[col]) else ""
-                val = val[:24] + "…" if len(val) > 25 else val
-                pdf.cell(col_w, 5, val, border=0, fill=True)
+                val = val[:24] + "..." if len(val) > 25 else val
+                pdf.cell(col_w, 5, _latin1(val), border=0, fill=True)
             pdf.ln()
         pdf.ln(4)
 
@@ -244,10 +247,19 @@ def _show_generate_tab():
             severity = None
 
     st.markdown("---")
-    if st.button("Generate Report", type="primary"):
-        period_str = f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}"
-        with st.spinner("Generating…"):
-            _dispatch(report_type, start_dt, end_dt, sel_team_id, severity, period_str)
+    col_btn, col_clear = st.columns([2, 1])
+    with col_btn:
+        if st.button("Generate Report", type="primary", use_container_width=True):
+            period_str = f"{start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}"
+            st.session_state["_rpt_params"] = (report_type, start_dt, end_dt, sel_team_id, severity, period_str)
+    with col_clear:
+        if st.button("Clear", use_container_width=True):
+            st.session_state.pop("_rpt_params", None)
+            st.rerun()
+
+    if "_rpt_params" in st.session_state:
+        with st.spinner("Generating..."):
+            _dispatch(*st.session_state["_rpt_params"])
 
 
 def _show_data_management_tab():
@@ -513,8 +525,9 @@ def _show_zone_summary(start_dt: datetime, end_dt: datetime, team_id, period_str
 
     st.markdown("<div style='margin:.9rem 0;'></div>", unsafe_allow_html=True)
 
-    # ── Per-zone cards (collapsible so the export section is always reachable) ──
+    # ── Per-zone cards — fixed-height scroll so export section stays reachable ──
     with st.expander(f"Zone breakdown — {zones_hit} zone(s)", expanded=True):
+      with st.container(height=420, border=False):
         for _, zone in summary_df.iterrows():
             res_pct = int((zone["resolved"] / zone["total_leaks"]) * 100) if zone["total_leaks"] else 0
             teams_html = "".join(

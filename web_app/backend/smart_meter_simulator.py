@@ -145,7 +145,7 @@ class SmartMeterSimulator:
                     except Exception as e:
                         print(f"Error storing reading: {e}")
 
-                    # Note: ML predictions are now handled by the prediction_loop service
+                    # Note: ML predictions are handled by the prediction_loop service
                     # Simulator only writes sensor readings, keeping concerns separate
 
                 # Realistic leak injection: max 3 concurrent leaks, ~10% chance every 2 min

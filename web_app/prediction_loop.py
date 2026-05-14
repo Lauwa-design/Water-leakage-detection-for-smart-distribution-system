@@ -22,6 +22,8 @@ from backend.ml_integration import ml_model
 class PredictionLoop:
     """Continuously checks meters for leaks and generates alerts"""
 
+    DAILY_LEAK_CAP = 20  # max leak=True predictions saved per calendar day
+
     def __init__(self, check_interval: int = 30, demo_mode: bool = True):
         self.check_interval = check_interval
         self.is_running = False
@@ -29,6 +31,11 @@ class PredictionLoop:
         self._stop_event = threading.Event()
         self._checked_meters = set()
         self.demo_mode = demo_mode
+        # last saved prediction per meter: {meter_id: (leak_detected, confidence, saved_at)}
+        self._last_saved: dict[str, tuple[bool, float, float]] = {}
+        # daily leak counter — resets when the calendar date changes
+        self._daily_leak_date: str = ""
+        self._daily_leak_count: int = 0
 
     def start(self):
         """Start the prediction loop"""
@@ -64,25 +71,27 @@ class PredictionLoop:
     def _check_all_meters(self):
         """Check all meters for leaks"""
         try:
-            # Get all meters
             meters = db_manager.get_meters()
             print(f"[Prediction Loop] Checking {len(meters)} meters for leaks...")
-            
+
+            # ── Daily cap — reset counter on new calendar day ─────────────────
+            _today = datetime.now().strftime("%Y-%m-%d")
+            if self._daily_leak_date != _today:
+                self._daily_leak_date = _today
+                self._daily_leak_count = 0
+
+            # ── Pass 1: collect raw predictions ───────────────────────────────
+            raw_predictions = []  # (meter_id, zone_id, confidence, leak_type, features)
+            _now = time.time()
+
             for _, meter in meters.iterrows():
                 meter_id = meter['meter_id']
-                zone_id = meter['zone_id']
-                
+                zone_id  = meter['zone_id']
                 try:
-                    # Extract features — returns None when readings are too sparse
                     features = realtime_feature_extractor.extract_features(meter_id)
                     if features is None:
-                        # Not enough sensor data for this meter; skip
                         continue
 
-                    # Degeneracy guard: if ALL variance/trend features are zero the
-                    # readings are constant (simulator cold-start or DB replays with
-                    # no noise).  The model returns a spurious 0.61 for such inputs —
-                    # skip rather than flood the DB with false positives.
                     _var_total = (
                         abs(features.get("flow_variance", 0.0))
                         + abs(features.get("daily_variance", 0.0))
@@ -91,62 +100,92 @@ class PredictionLoop:
                     if _var_total < 1e-6:
                         continue
 
-                    # Make prediction
                     leak_detected, confidence, leak_type = ml_model.predict(features)
-                    
-                    # Demo mode: artificially create some leaks for demonstration
-                    if self.demo_mode and not leak_detected:
-                        import random
-                        # 2% chance of simulated leak in demo mode (reduced from 10%)
-                        if random.random() < 0.02:
-                            leak_detected = True
-                            confidence = random.uniform(0.75, 0.95)
-                            leak_type = random.choice(['slow_creep', 'moderate_burst'])
-                            print(f"[Prediction Loop] Demo mode: Simulated leak for {meter_id}")
-                    
-                    # Store prediction
-                    db_manager.add_leak_prediction(
-                        meter_id=meter_id,
-                        confidence=confidence,
-                        leak_detected=leak_detected,
-                        leak_type=leak_type,
-                        features=json.dumps(features)
-                    )
-                    print(f"[Prediction Loop] Saved prediction for {meter_id}: leak={leak_detected}, conf={confidence:.2f}")
-                    
-                    # Create alert if leak detected with high confidence (≥85% for warning, ≥95% for critical)
-                    if leak_detected and confidence >= 0.85:
-                        severity = "critical" if confidence >= 0.95 else "warning"
+                    raw_predictions.append((meter_id, zone_id, confidence, leak_type, features, leak_detected))
 
-                        # Guard 1: one active alert per meter
-                        existing_meter = db_manager.get_active_alert_for_meter(meter_id)
-                        if existing_meter:
-                            continue
-
-                        # Guard 2: zone correlation — if another meter in the same zone
-                        # was flagged within the last 15 minutes, treat it as the same
-                        # hydraulic source and suppress the duplicate alert.
-                        recent_zone = db_manager.get_recent_zone_alert(zone_id, within_minutes=15)
-                        if recent_zone:
-                            print(
-                                f"[Prediction Loop] Suppressed duplicate: {meter_id} in zone {zone_id} "
-                                f"— same source as alert {recent_zone['id']} on meter {recent_zone['meter_id']}"
-                            )
-                            continue
-
-                        title = f"Leak Detected - {leak_type}"
-                        message = f"Confidence: {confidence:.1%}. Potential leak detected on meter {meter_id}."
-                        db_manager.add_alert(
-                            meter_id=meter_id,
-                            zone_id=zone_id,
-                            severity=severity,
-                            title=title,
-                            message=message
-                        )
-                        print(f"[Prediction Loop] Alert created: {meter_id} - {leak_type} ({confidence:.1%})")
-                    
                 except Exception as e:
                     print(f"[Prediction Loop] Error processing meter {meter_id}: {e}")
+
+            if not raw_predictions:
+                return
+
+            # ── Relative threshold — computed once across the full batch ───────
+            all_confs = [c for _, _, c, _, _, ld in raw_predictions if ld]
+            if all_confs:
+                mean_c = sum(all_confs) / len(all_confs)
+                std_c  = (sum((c - mean_c) ** 2 for c in all_confs) / len(all_confs)) ** 0.5
+                alert_threshold = mean_c + max(std_c, 0.005)
+            else:
+                alert_threshold = 0.85
+
+            # ── Pass 2: save predictions + create alerts ──────────────────────
+            # leak_detected is only kept True for meters that clear the relative
+            # threshold so that leak_predictions matches what the alert queue shows.
+            candidates = []
+            for meter_id, zone_id, confidence, leak_type, features, leak_detected in raw_predictions:
+                # Apply relative threshold — demote uniform false positives to False
+                if leak_detected and confidence < alert_threshold:
+                    leak_detected = False
+                    confidence = round(confidence, 4)
+                    leak_type  = "none"
+
+                # Daily cap — after 20 true leaks today, save remainder as False
+                if leak_detected and self._daily_leak_count >= self.DAILY_LEAK_CAP:
+                    leak_detected = False
+                    confidence = 0.0
+                    leak_type  = "none"
+
+                # State-change guard — skip DB write if status unchanged
+                _prev = self._last_saved.get(meter_id)
+                if _prev is not None and _prev[0] == leak_detected:
+                    if leak_detected and confidence >= alert_threshold:
+                        candidates.append((meter_id, zone_id, confidence, leak_type))
+                    continue
+
+                db_manager.add_leak_prediction(
+                    meter_id=meter_id,
+                    confidence=confidence,
+                    leak_detected=leak_detected,
+                    leak_type=leak_type,
+                    features=json.dumps(features)
+                )
+                self._last_saved[meter_id] = (leak_detected, confidence, _now)
+                if leak_detected:
+                    self._daily_leak_count += 1
+                    candidates.append((meter_id, zone_id, confidence, leak_type))
+                print(f"[Prediction Loop] Saved prediction for {meter_id}: leak={leak_detected}, conf={confidence:.2f}")
+
+            if not candidates:
+                return
+
+            for meter_id, zone_id, confidence, leak_type in sorted(candidates, key=lambda x: -x[2]):
+                if confidence < alert_threshold:
+                    break  # sorted descending — nothing below this will qualify
+
+                existing_meter = db_manager.get_active_alert_for_meter(meter_id)
+                if existing_meter:
+                    continue
+
+                recent_zone = db_manager.get_recent_zone_alert(zone_id, within_minutes=15)
+                if recent_zone:
+                    print(
+                        f"[Prediction Loop] Suppressed duplicate: {meter_id} in zone {zone_id} "
+                        f"— same source as alert {recent_zone['id']} on meter {recent_zone['meter_id']}"
+                    )
+                    continue
+
+                severity = "critical" if confidence >= 0.95 else "warning"
+                title   = f"Leak Detected - {leak_type}"
+                message = f"Confidence: {confidence:.1%}. Potential leak detected on meter {meter_id}."
+                db_manager.add_alert(
+                    meter_id=meter_id,
+                    zone_id=zone_id,
+                    severity=severity,
+                    title=title,
+                    message=message
+                )
+                print(f"[Prediction Loop] Alert created: {meter_id} - {leak_type} ({confidence:.1%})")
+
         except Exception as e:
             print(f"[Prediction Loop] Error in _check_all_meters: {e}")
 
