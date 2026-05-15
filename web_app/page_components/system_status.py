@@ -278,6 +278,27 @@ def show_system_status() -> None:
                     st.session_state.pop("_confirm_clear_alerts", None)
                     st.rerun()
 
+        if st.button("Reset Simulator Data", use_container_width=True, key="reset_sim_btn"):
+            st.session_state["_confirm_reset_sim"] = True
+
+        if st.session_state.get("_confirm_reset_sim"):
+            st.warning("This will delete **all** sensor readings, leak predictions, and alerts. The simulator will start fresh. Are you sure?")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Yes, Reset", type="primary", key="confirm_reset_sim"):
+                    ok, msg = db_manager.clear_all_dynamic_data()
+                    clear_alert_cache()
+                    st.session_state.pop("_confirm_reset_sim", None)
+                    if ok:
+                        st.success(f"Reset complete — {msg}")
+                    else:
+                        st.error(msg)
+                    st.rerun()
+            with c2:
+                if st.button("Cancel", key="cancel_reset_sim"):
+                    st.session_state.pop("_confirm_reset_sim", None)
+                    st.rerun()
+
         # ── DB Connection card ──
         cfg = db_manager.config
         db_glow   = "rgba(34,197,94,.25)"  if db_connected else "rgba(239,68,68,.25)"

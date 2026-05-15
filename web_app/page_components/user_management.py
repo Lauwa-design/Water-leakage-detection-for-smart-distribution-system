@@ -107,22 +107,29 @@ def show_users_by_status(status: str):
             st.write(f"**Last Login:** {user['last_login'].strftime('%Y-%m-%d %H:%M')}")
 
     with col_actions:
-        if st.button("Edit", key=f"edit_user_{status}_{user['user_id']}"):
+        if st.button("Edit", key=f"edit_user_{status}_{user['user_id']}", use_container_width=True):
             st.session_state[f'editing_user_{user["user_id"]}'] = True
             st.rerun()
 
-        if st.button("Change Role", key=f"role_user_{status}_{user['user_id']}"):
+        if st.button("Change Role", key=f"role_user_{status}_{user['user_id']}", use_container_width=True):
             st.session_state[f'changing_role_{user["user_id"]}'] = True
             st.rerun()
 
+        if st.button("Reset Password", key=f"reset_pw_{status}_{user['user_id']}", use_container_width=True):
+            st.session_state[f'resetting_pw_{user["user_id"]}'] = True
+            st.rerun()
+
         if status == 'active':
-            if st.button("Deactivate", key=f"delete_user_{status}_{user['user_id']}"):
+            if st.button("Deactivate", key=f"delete_user_{status}_{user['user_id']}", use_container_width=True):
                 st.session_state[f'confirm_delete_{user["user_id"]}'] = True
                 st.rerun()
         else:
-            if st.button("Reactivate", key=f"reactivate_user_{status}_{user['user_id']}"):
+            if st.button("Reactivate", key=f"reactivate_user_{status}_{user['user_id']}", use_container_width=True):
                 st.session_state[f'confirm_reactivate_{user["user_id"]}'] = True
                 st.rerun()
+
+    if st.session_state.get(f'resetting_pw_{user["user_id"]}', False):
+        show_reset_password_form(user)
 
     if st.session_state.get(f'editing_user_{user["user_id"]}', False):
         show_edit_user_form(user)
@@ -352,6 +359,46 @@ def show_edit_user_form(user: pd.Series):
                 if success:
                     st.success(msg)
                     st.session_state.pop(f'editing_user_{user["user_id"]}', None)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+
+def show_reset_password_form(user: pd.Series):
+    """Inline form for System Admin to reset another user's password."""
+    st.markdown("---")
+    st.subheader("Reset Password")
+    st.write(f"Setting a new password for **{user['name']}** ({user['email']})")
+
+    with st.form(f"reset_pw_form_{user['user_id']}"):
+        new_password = st.text_input("New Password *", type="password")
+        confirm_password = st.text_input("Confirm Password *", type="password")
+
+        col_submit, col_cancel = st.columns(2)
+        with col_submit:
+            submitted = st.form_submit_button("Reset Password")
+        with col_cancel:
+            cancelled = st.form_submit_button("Cancel")
+
+        if cancelled:
+            st.session_state.pop(f'resetting_pw_{user["user_id"]}', None)
+            st.rerun()
+
+        if submitted:
+            if not new_password.strip():
+                st.error("Password cannot be empty.")
+            elif len(new_password) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif new_password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                password_hash = bcrypt.hashpw(
+                    new_password.encode("utf-8"), bcrypt.gensalt()
+                ).decode("utf-8")
+                success, msg = db_manager.reset_user_password(user["user_id"], password_hash)
+                if success:
+                    st.success(msg)
+                    st.session_state.pop(f'resetting_pw_{user["user_id"]}', None)
                     st.rerun()
                 else:
                     st.error(msg)
