@@ -121,18 +121,19 @@ class SmartMeterSimulator:
     def _simulation_loop(self):
         """Main simulation loop"""
         leak_check_counter = 0
+        prune_counter = 0
         while self.is_running:
             try:
                 for meter_id in self.meters:
                     reading = self._generate_reading(meter_id)
-                    
+
                     # Store in buffer
                     with self._lock:
                         self.data_buffer[meter_id].append(reading)
                         # Keep only last 100 readings
                         if len(self.data_buffer[meter_id]) > 100:
                             self.data_buffer[meter_id] = self.data_buffer[meter_id][-100:]
-                    
+
                     # Store in database
                     try:
                         from backend.mysql_database_manager import db_manager
@@ -147,6 +148,17 @@ class SmartMeterSimulator:
 
                     # Note: ML predictions are handled by the prediction_loop service
                     # Simulator only writes sensor readings, keeping concerns separate
+
+                # Prune sensor_readings older than 2 h every 5 minutes to keep the
+                # table small and queries fast regardless of how many meters are active.
+                prune_counter += 1
+                if prune_counter >= 60:  # 60 cycles × 5 s = 5 minutes
+                    prune_counter = 0
+                    try:
+                        from backend.mysql_database_manager import db_manager
+                        db_manager.clear_sensor_readings(older_than_hours=2)
+                    except Exception as e:
+                        print(f"[SIM] Prune error: {e}")
 
                 # Leak injection: max 30 concurrent leaks, ~40% chance every 30 s
                 MAX_CONCURRENT_LEAKS = 30
