@@ -22,7 +22,7 @@ from backend.ml_integration import ml_model
 class PredictionLoop:
     """Continuously checks meters for leaks and generates alerts"""
 
-    DAILY_LEAK_CAP = 20  # max leak=True predictions saved per calendar day
+    DAILY_LEAK_CAP = 200  # max leak=True predictions saved per calendar day
 
     def __init__(self, check_interval: int = 30, demo_mode: bool = True):
         self.check_interval = check_interval
@@ -135,7 +135,7 @@ class PredictionLoop:
                 # Require confirmation: must be positive for CONFIRM_COUNT batches in a row
                 confirmed_leak = leak_detected and self._positive_streak.get(meter_id, 0) >= CONFIRM_COUNT
 
-                # Daily cap — after 20 true leaks today, save remainder as False
+                # Daily cap — after 200 true leaks today, save remainder as False
                 if confirmed_leak and self._daily_leak_count >= self.DAILY_LEAK_CAP:
                     confirmed_leak = False
                     confidence     = 0.0

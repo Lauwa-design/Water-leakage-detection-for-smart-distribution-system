@@ -148,8 +148,8 @@ class SmartMeterSimulator:
                     # Note: ML predictions are handled by the prediction_loop service
                     # Simulator only writes sensor readings, keeping concerns separate
 
-                # Leak injection: max 5 concurrent leaks, ~40% chance every 30 s
-                MAX_CONCURRENT_LEAKS = 5
+                # Leak injection: max 30 concurrent leaks, ~40% chance every 30 s
+                MAX_CONCURRENT_LEAKS = 30
                 leak_check_counter += 1
 
                 # Check every 6 cycles (~30 s); 40% probability keeps leaks visible
