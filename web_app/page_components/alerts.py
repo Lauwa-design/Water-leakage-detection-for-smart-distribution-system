@@ -36,6 +36,12 @@ def show_alerts():
         show_field_technician_alerts(current_user_id)
         return
 
+    _live_alerts_body()
+
+
+@st.fragment(run_every=30)
+def _live_alerts_body():
+
     # For NRW Officer and System Admin - show all alerts
     st.write("Review and manage leak alerts, assign to teams, and track resolution status.")
 

@@ -172,7 +172,7 @@ class PredictionLoop:
                 if existing_meter:
                     continue
 
-                recent_zone = db_manager.get_recent_zone_alert(zone_id, within_minutes=15)
+                recent_zone = db_manager.get_recent_zone_alert(zone_id, within_minutes=2)
                 if recent_zone:
                     print(
                         f"[Prediction Loop] Suppressed duplicate: {meter_id} in zone {zone_id} "

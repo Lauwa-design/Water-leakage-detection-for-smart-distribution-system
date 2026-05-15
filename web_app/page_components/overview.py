@@ -30,6 +30,11 @@ def _active_alert_counts() -> tuple[int, int]:
 
 
 def show_overview():
+    _live_overview()
+
+
+@st.fragment(run_every=30)
+def _live_overview():
     # ── Load data ─────────────────────────────────────────────────────────────
     data        = get_cached_data(hours=24)
     static_data = load_static_data()
